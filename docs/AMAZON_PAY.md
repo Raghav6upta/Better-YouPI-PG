@@ -19,6 +19,12 @@ For normal dashboard setup, follow [Amazon Pay + WhatsApp frontend setup](FRONTE
 - Recommended: a separate Amazon account and receiving UPI ID for gateway activity. Complete Amazon's UPI setup and confirm a small incoming transfer appears in that account's web history before enabling verification. See [account preparation and phone-number requirements](FRONTEND_SETUP.md#0-prepare-a-dedicated-amazon-account).
 - A dedicated browser profile. Do not point this worker at your everyday browser profile.
 
+### Amazon login and UPI registration
+
+The watcher does not require your Amazon login number to match your bank-registered number. It validates the receiving UPI ID in the signed-in account's receipts. The maintainer describes creating a dedicated Amazon account with Number A and registering Amazon Pay UPI within it using bank-linked Number B/SIM.
+
+When moving an existing Amazon Pay UPI registration from another Amazon account, we recommend deregistering the old UPI setup once you are ready to retire it, then registering in the dedicated account. See [the two-number example and migration steps](FRONTEND_SETUP.md#amazon-login-number-and-bank-registered-number) for the distinction, effects to review and a receipt test. Amazon controls registration eligibility; this is reported setup experience, not a guarantee of simultaneous registrations.
+
 ## Local read-only trial
 
 Copy the Amazon settings from `.env.example` to a git-ignored `.env.amazon-local`. Set your receiving VPA, the corresponding YouPI receiving account ID and browser channel. Keep `AMAZON_PAY_DRY_RUN=true` and `AMAZON_PAY_MATCHING_MODE=observe`.

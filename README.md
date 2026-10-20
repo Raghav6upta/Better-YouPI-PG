@@ -54,7 +54,11 @@ The merchant verifies the webhook HMAC using the raw request body before fulfill
 
 Use a dedicated Amazon account and receiving UPI ID for the gateway, separate from your personal shopping and payments. This keeps the saved browser session and receipt history focused on gateway activity; it does not eliminate the matching limitations.
 
-Complete Amazon Pay UPI setup in the Amazon app before connecting the dashboard. If Amazon supports a different sign-in number for your account, the watcher can use that account once its received UPI receipts are visible; a different login number is not a guaranteed setup option. Bank-linked UPI verification still requires the bank-registered mobile number. See [account preparation and phone numbers](docs/FRONTEND_SETUP.md#0-prepare-a-dedicated-amazon-account) and [NPCI's UPI FAQ](https://www.npci.org.in/what-we-do/upi/faqs).
+**Your Amazon login number and your bank-linked UPI number serve different purposes. This gateway does not require them to be the same.** The maintainer describes this setup: create a separate Amazon account with one number, which is not linked to the bank, then register Amazon Pay UPI inside that account using another number that is linked to the bank.
+
+Use the bank-linked number/SIM for UPI verification, then configure the gateway with the actual receiving UPI ID shown by Amazon. The bank-number requirement applies to UPI verification, not the gateway's Amazon login. [NPCI's UPI FAQ](https://www.npci.org.in/what-we-do/upi/faqs)
+
+**Moving from another Amazon account?** If that bank-linked number already has an Amazon Pay UPI registration on an account you control, we recommend deregistering that old UPI registration before setting it up on the dedicated account, once you are ready to stop using the old setup. Review existing payment links and AutoPay mandates before confirming. See [the two-number example and migration steps](docs/FRONTEND_SETUP.md#amazon-login-number-and-bank-registered-number); the reported setup is not a guarantee of Amazon's registration rules for every account.
 
 ## Quickstart
 

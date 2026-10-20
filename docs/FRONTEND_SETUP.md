@@ -6,18 +6,42 @@ Use the merchant dashboard at http://127.0.0.1:6001. Unlock it with the admin to
 
 **Recommended: use a separate Amazon account and receiving UPI ID for this gateway.** Keep personal shopping and unrelated payments out of the account used by the watcher. This reduces mixed receipt history and the personal activity accessible through its saved browser session. It does not remove the same-amount attribution risk.
 
-1. Create or choose an Amazon account you control for gateway use.
-2. Complete **Amazon Pay UPI** registration and bank linking in the Amazon app. An Amazon shopping account alone is insufficient. Amazon distinguishes bank-linked UPI from its wallet; this observer requires received bank UPI receipts, not Amazon Pay Balance credits. See [Amazon's Pay guide](https://www.aboutamazon.in/news/amazon-pay/amazon-pay-guide-wallet-upi-features).
+1. Create or choose an Amazon account you control for gateway use. Its login number and the number used for UPI verification have separate roles; see the two-number example below.
+2. Complete **Amazon Pay UPI** registration and bank linking in the Amazon app using your bank-registered number/SIM. If you are moving an existing Amazon Pay UPI setup from another Amazon account, follow the migration steps below first. An Amazon shopping account alone is insufficient. Amazon distinguishes bank-linked UPI from its wallet; this observer requires received bank UPI receipts, not Amazon Pay Balance credits. See [Amazon's Pay guide](https://www.aboutamazon.in/news/amazon-pay/amazon-pay-guide-wallet-upi-features).
 3. Note the actual receiving UPI ID shown by Amazon. Do not construct a UPI ID from a phone number or assume a payment sent to a mobile-number alias will appear in this account's history.
 4. Make a small controlled incoming transfer to that exact UPI ID. Sign in to the same Amazon account on the desktop and confirm a **Received** receipt with that UPI ID under **Credited to**. This receipt also lets the watcher's initial scan verify the account.
 
 ### Amazon login number and bank-registered number
 
-The watcher matches the receiving UPI ID in receipts; it does not compare your Amazon login phone number with your bank-registered number. If Amazon's setup flow supports a different login number for your account, you can use that arrangement after confirming the receipt test above. This project cannot guarantee Amazon supports it for every account.
+**Better-YouPI-PG does not require the number on your Amazon login to match the number registered with your bank.** The watcher uses your signed-in Amazon session and matches the receiving UPI ID in receipts.
 
-For bank-linked UPI registration, the mobile number verified by the UPI app must match the number registered with your bank so the bank account can be found. A different Amazon login number does not bypass that requirement. Follow the current Amazon app setup flow. [NPCI UPI FAQ](https://www.npci.org.in/what-we-do/upi/faqs)
+The maintainer describes this two-number arrangement:
+
+| Purpose | Number to use |
+| --- | --- |
+| Create and sign in to the dedicated Amazon account | **Number A**, which you control and which need not be linked to your bank |
+| Verify Amazon Pay UPI and link your bank account | **Number B**, the number registered with your bank, using its SIM |
+| Receive and verify gateway payments | The actual **UPI ID** created in that Amazon account; copy it from Amazon |
+
+In that setup, the Amazon account is created with Number A, while Amazon Pay UPI is registered inside it using Number B. Incoming payments go to the resulting UPI ID and must appear in that account's Amazon Pay web history for the watcher to read them. Creating the Amazon login with Number A alone does not complete UPI registration.
+
+The bank-linked number requirement applies to **Number B's UPI verification**: the number verified by the UPI app must match the number registered with your bank for account discovery. It is not a requirement in this gateway for Number A and Number B to match. [NPCI UPI FAQ](https://www.npci.org.in/what-we-do/upi/faqs)
+
+This two-number setup is maintainer-reported experience, not an independently verified Amazon policy for every account. Complete the current Amazon app flow and confirm the small incoming receipt test before enabling the watcher.
 
 This initial registration may require Amazon/bank verification SMS or OTPs. The gateway's **payment verification** needs no Gmail/SMS observer; customer checkout OTPs use WhatsApp.
+
+### Moving UPI from another Amazon account
+
+Number B may already be associated with an Amazon account or Amazon Pay UPI registration you control. When moving that UPI setup to the dedicated gateway account, **we recommend deregistering Amazon Pay UPI on the old account before registering it on the new one**, once you are ready to retire the old setup. This is project migration advice, not a promise that Amazon allows simultaneous UPI registrations across accounts.
+
+1. Finish active payments and stop sharing the old UPI ID or QR for new payments. Review any payment links and active AutoPay mandates that depend on the old setup.
+2. Sign in to the old Amazon account, open Amazon Pay's UPI settings and use its UPI deregistration control. Read the confirmation and follow any instructions about linked accounts or mandates before proceeding. This concerns the UPI registration; you do not need to delete the Amazon shopping account.
+3. Sign in to the dedicated Amazon account with Number A. Start Amazon Pay UPI setup and verify the bank-linked Number B/SIM as instructed by Amazon.
+4. Copy the UPI ID Amazon shows after setup; do not assume the old ID will remain usable or transfer to the new account.
+5. Confirm a small incoming transfer appears in the new account's web history, then select that exact UPI ID in the gateway's Store Settings and connect the same Amazon account.
+
+If Amazon reports that the number is already registered or blocks registration, follow its in-app help or contact Amazon support. The gateway cannot resolve an Amazon account-registration conflict. You do not need to deregister unrelated UPI apps for this migration.
 
 ## 1. Connect Amazon Pay
 
