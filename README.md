@@ -4,7 +4,7 @@
 
 An experimental fork maintained by [Raghav6upta](https://github.com/Raghav6upta), based on [YouPI PG](https://github.com/youpi-pg/YouPI-PG), originally credited to [Gaurav](https://github.com/gxurav1710) and Zenuxs. The original checkout and payment lifecycle provide the foundation; this fork adds an Amazon Pay observer and simpler account setup.
 
-> **Experimental beta.** This is browser-based payment observation, not an official Amazon payment API or an audited payment processor. Matching by recipient, amount and time can misattribute an unrelated same-amount transfer. Do not treat it as production-ready. [Limitations](#limitations) ? [Licensing status](LICENSING.md)
+> **Experimental beta.** This is browser-based payment observation, not an official Amazon payment API or an audited payment processor. Matching by recipient, amount and time can misattribute an unrelated same-amount transfer. Do not treat it as production-ready. [Limitations](#limitations) | [Licensing status](LICENSING.md)
 
 ## Why this fork?
 
@@ -47,11 +47,15 @@ The merchant verifies the webhook HMAC using the raw request body before fulfill
 
 ## Quickstart
 
-In a local checkout of this repository:
+Clone the repository, then install its dependencies:
 
 ```sh
+git clone https://github.com/Raghav6upta/Better-YouPI-PG.git
+cd Better-YouPI-PG
 npm ci
 ```
+
+The repository's default branch contains the tested Amazon Pay version. You do not need to select another branch.
 
 Create the local configuration:
 
