@@ -27,8 +27,9 @@
 - 21 Amazon tests and 17 WhatsApp tests pass.
 - A controlled live test completed WhatsApp login, UPI payment, Amazon receipt attribution and verified signed webhook delivery.
 - A live WhatsApp reconnect after the logging fix emitted only gateway status messages.
+- A fresh public clone starts the API, checkout, admin and demo services without existing account credentials. The admin token is created at startup; Amazon and WhatsApp wait for the operator to connect them.
 
-The CI workflow has been prepared locally; its hosted Linux/Windows results must be checked after publishing.
+Hosted Windows and Linux CI passed for the published beta. Check [GitHub Actions](https://github.com/Raghav6upta/Better-YouPI-PG/actions) for the result on the latest commit.
 
 ## Release limitations
 
