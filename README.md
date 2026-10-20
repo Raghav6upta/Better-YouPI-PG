@@ -18,6 +18,7 @@ The observer defaults to a **five-second delay after each completed scan while a
 | --- | --- |
 | Direct Amazon Pay receipt observation | Removes the wait for bank SMS/email alerts and Gmail polling in Amazon mode |
 | Amazon Pay admin tab | Connect, sign in, enable, pause and reconnect from one place |
+| Mobile “Pay with a UPI app” button | Open an installed payment app using the active checkout's UPI link, without scanning |
 | Dedicated WhatsApp OTP tab | QR or phone-code linking, saved sessions and a test-message control |
 | Honest OTP failure responses | Checkout does not claim a code was sent when dispatch failed |
 | Optional customer email | Customers can sign in with WhatsApp without supplying email |
