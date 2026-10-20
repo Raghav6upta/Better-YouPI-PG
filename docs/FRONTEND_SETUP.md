@@ -74,10 +74,6 @@ If WhatsApp cannot start because its native database module is missing, run `npm
 
 Open a new checkout from your merchant store. Enter the customer's WhatsApp number and name; email is optional. Request the OTP, read it on the phone, and enter it in checkout. Then pay the displayed UPI QR using another person's UPI account.
 
-On a phone, an active UPI checkout also offers **Pay with a UPI app** above the QR. Tap it to open the server-generated `upi://pay` link with the same receiver, amount and order note as the QR. Your phone may show an app chooser or open its default UPI app. Return to checkout after paying; opening an app does not confirm payment.
-
-App launching depends on the installed apps, operating system and browser. Generic UPI links are primarily intended for Android; iOS and in-app browsers may not handle them. If nothing opens, use a supported browser or scan the QR from another device. The button is unavailable for queued, processing, expired or completed payments. A desktop browser preview cannot verify a real phone's app handoff.
-
 Amazon Pay verifies the incoming payment. The merchant must verify the signed server webhook before treating the order as paid. Gmail and SMS observers are not required in Amazon mode.
 
 The current local test page is http://127.0.0.1:6105. It opens a real ₹1 checkout in a separate tab and checks the signed webhook. It requires both connections to be ready; it does not simulate payment.

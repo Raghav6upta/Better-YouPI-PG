@@ -514,33 +514,6 @@
       gap: 4px;
     }
 
-    .ypg-mobile-upi-action { margin: 16px 0; }
-    .ypg-mobile-upi-action[hidden] { display: none !important; }
-    .ypg-mobile-upi-button {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 48px;
-      padding: 12px 16px;
-      border-radius: 12px;
-      background: var(--ypg-blue);
-      color: #fff;
-      font-size: 15px;
-      font-weight: 600;
-      text-decoration: none;
-      text-align: center;
-    }
-    .ypg-mobile-upi-button:focus-visible {
-      outline: 3px solid var(--ypg-blue);
-      outline-offset: 3px;
-    }
-    .ypg-mobile-upi-help {
-      margin: 8px 0 0;
-      font-size: 12px;
-      line-height: 1.5;
-      color: #64748b;
-    }
-
     /* --- 4. CORE UPI QR CARD (STRICTLY UPI ONLY) --- */
     .ypg-qr-card-container {
       background: #f8fafc;
@@ -3536,17 +3509,6 @@
                   </div>
                 </div>
 
-                <div class="ypg-mobile-upi-action" id="mobileUpiAction" hidden>
-                  <a id="btnPayWithUpiApp" class="ypg-mobile-upi-button" target="_top"
-                    aria-describedby="mobileUpiHelp" onclick="return openMobileUpiApp(event)">
-                    Pay with a UPI app
-                  </a>
-                  <p class="ypg-mobile-upi-help" id="mobileUpiHelp" role="status">
-                    Pay on this phone without scanning. Choose an installed UPI app, then return here.
-                    If no app opens, scan the QR using another device.
-                  </p>
-                </div>
-
                 <!-- Core UPI QR Card -->
                 <div class="ypg-qr-card-container">
                   <!-- Left: QR Box -->
@@ -5054,67 +5016,8 @@
     }
 
     let currentSelectedMethod = 'UPI';
-    let mobileUpiReturnPending = false;
-
-    function mobileUpiUri(data) {
-      const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-      if (!mobile || !data || data.status !== 'ACTIVE' || data.method !== 'UPI' ||
-          currentSelectedMethod !== 'UPI' || data.isBanned || data.fraudDetected ||
-          !(Date.parse(data.expiresAt) > Date.now()) || typeof data.upiUri !== 'string') return null;
-      try {
-        const uri = new URL(data.upiUri);
-        if (uri.protocol !== 'upi:' || uri.hostname !== 'pay' || uri.username || uri.password ||
-            uri.port || (uri.pathname && uri.pathname !== '/') || uri.hash ||
-            !uri.searchParams.get('pa') || !uri.searchParams.get('am')) return null;
-        // Use exactly the server-generated QR payload. Never invent a receiver or amount.
-        return data.upiUri;
-      } catch {
-        return null;
-      }
-    }
-
-    function updateMobileUpiAction(data) {
-      const action = document.getElementById('mobileUpiAction');
-      const link = document.getElementById('btnPayWithUpiApp');
-      const uri = mobileUpiUri(data);
-      action.hidden = !uri;
-      if (uri) link.setAttribute('href', uri);
-      else link.removeAttribute('href');
-    }
-
-    function openMobileUpiApp(event) {
-      // Recheck at the tap, including expiry while the browser was in the background.
-      const uri = mobileUpiUri(state);
-      if (!uri || document.getElementById('viewUpiContent').hidden ||
-          document.getElementById('mobileUpiAction').hidden ||
-          !document.getElementById('btnPayWithUpiApp').hasAttribute('href')) {
-        event.preventDefault();
-        updateMobileUpiAction(null);
-        loadState();
-        return false;
-      }
-      document.getElementById('btnPayWithUpiApp').setAttribute('href', uri);
-      document.getElementById('mobileUpiHelp').textContent =
-        'Return here after paying; confirmation is automatic. If no app opened, use your browser directly or scan the QR with another device. If you already paid, wait for confirmation before trying again.';
-      mobileUpiReturnPending = true;
-      // Native link navigation keeps the user's tap gesture, including embedded checkout.
-      // Launching an app is never payment evidence.
-      return true;
-    }
-
-    function refreshAfterUpiApp() {
-      if (!mobileUpiReturnPending || document.visibilityState !== 'visible') return;
-      mobileUpiReturnPending = false;
-      updateMobileUpiAction(null);
-      loadState();
-    }
-    document.addEventListener('visibilitychange', refreshAfterUpiApp);
-    window.addEventListener('focus', refreshAfterUpiApp);
-    window.addEventListener('pageshow', refreshAfterUpiApp);
 
     function hideAllContent() {
-      updateMobileUpiAction(null);
       document.getElementById('viewUpiContent').hidden = true;
       const vCod = document.getElementById('viewCodContent');
       if (vCod) vCod.hidden = true;
@@ -5346,7 +5249,6 @@
             });
           } else if (method === 'UPI') {
             if (resData.status === 'ACTIVE') {
-              loadState();
               loadQrSvg();
               runCountdown(resData.timeRemainingSeconds || 300, sec => {
                 const el = document.getElementById('activeTimerText');
@@ -5606,14 +5508,12 @@
         const data = await res.json().catch(() => ({}));
 
         if (res.status === 409 || data.error === 'DUPLICATE_SESSION_DETECTED') {
-          updateMobileUpiAction(null);
           renderDuplicateSession(data);
           dismissSplashScreen();
           return;
         }
 
         if (!res.ok) {
-          updateMobileUpiAction(null);
           dismissSplashScreen();
           return;
         }
@@ -5621,7 +5521,6 @@
         renderState(data);
         dismissSplashScreen();
       } catch (e) {
-        updateMobileUpiAction(null);
         console.warn('loadState error:', e);
         dismissSplashScreen();
       }
@@ -5694,7 +5593,6 @@
 
     function renderState(data) {
       state = data;
-      updateMobileUpiAction(null);
       const b = data.branding || {};
       const appName = b.appName || 'YouPI PG';
       const merchantName = data.merchantName || 'Merchant Checkout';
@@ -6248,7 +6146,6 @@
         } else {
           // Default: UPI QR (CRITICAL INVARIANT: ALWAYS SHOWS QR AND RUNS 5:00 TIMER REGARDLESS OF GREEN/YELLOW/RED)
           document.getElementById('viewUpiContent').hidden = false;
-          updateMobileUpiAction(data);
           document.getElementById('ypgStickyFooter').style.display = 'flex';
           loadQrSvg();
 
@@ -6258,7 +6155,6 @@
           const targetExpiry = data.expiresAt || new Date(Date.now() + remainingSec * 1000).toISOString();
 
           if (remainingSec <= 0 && data.status === 'ACTIVE') {
-            updateMobileUpiAction(null);
             const tText = document.getElementById('activeTimerText');
             if (tText) tText.textContent = 'Expired';
             if (btnContinue) btnContinue.style.display = 'none';
@@ -6273,7 +6169,6 @@
           }
 
           runCountdown(remainingSec, sec => {
-            if (sec <= 0) updateMobileUpiAction(null);
             const tText = document.getElementById('activeTimerText');
             if (tText) tText.textContent = formatTime(sec);
 
@@ -6284,7 +6179,6 @@
               btnContinue.style.display = 'none';
             }
           }, () => {
-            updateMobileUpiAction(null);
             const tText = document.getElementById('activeTimerText');
             if (tText) tText.textContent = 'Expired';
             if (btnContinue) btnContinue.style.display = 'none';
