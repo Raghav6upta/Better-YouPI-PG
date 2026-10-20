@@ -2,6 +2,12 @@
 
 This observer reads incoming UPI receipts from a dedicated, signed-in Amazon India browser profile. It uses the existing checkout, payment state machine and signed merchant webhooks. Customers do not enter a UTR. Amazon web receipt extraction is browser automation, not an Amazon-signed payment API.
 
+## Why observe receipts directly?
+
+Bank SMS/email alerts can arrive after the payment itself. A notification-based gateway must wait for the alert and then ingest it; the Gmail observer also polls the inbox. Amazon mode removes those steps by checking receipts in Amazon Pay's web portal. If a receipt is already visible there, verification need not wait for the bank's notification.
+
+This changes the evidence source, not the underlying UPI transfer or bank settlement. The browser still polls Amazon, and Amazon must publish the receipt before the gateway can read it. The intended benefit is less notification-related waiting, with no measured speedup or fixed confirmation time promised. See [the workflow comparison](WHY_THIS_FORK.md#the-problem-waiting-for-a-notification-after-payment).
+
 ## Requirements
 
 For normal dashboard setup, follow [Amazon Pay + WhatsApp frontend setup](FRONTEND_SETUP.md). The standalone commands below are for observer diagnostics; dashboard users do not need to configure Gmail or SMS.
@@ -10,6 +16,7 @@ For normal dashboard setup, follow [Amazon Pay + WhatsApp frontend setup](FRONTE
 - `npm ci` from the repository root.
 - Installed Edge/Chrome, configured with `AMAZON_PAY_BROWSER_CHANNEL=msedge` or `chrome`; otherwise install Chromium using `npx playwright install chromium`.
 - The checkout receiving VPA must be the same VPA visible under **Credited to** in Amazon Pay receipts.
+- Recommended: a separate Amazon account and receiving UPI ID for gateway activity. Complete Amazon's UPI setup and confirm a small incoming transfer appears in that account's web history before enabling verification. See [account preparation and phone-number requirements](FRONTEND_SETUP.md#0-prepare-a-dedicated-amazon-account).
 - A dedicated browser profile. Do not point this worker at your everyday browser profile.
 
 ## Local read-only trial
@@ -44,7 +51,8 @@ Receipt consumption, payment settlement, slot release and a durable notification
 
 ## Polling and failure handling
 
-- Default refresh interval: five seconds while active, thirty seconds idle. End-to-end latency is not guaranteed and requires live measurement.
+- Default delay after a completed scan: five seconds while a payment is active, thirty seconds idle. Scan duration is additional; a newly active payment may still wait for an already scheduled idle scan.
+- The imported Gmail poller also defaults to five seconds. Amazon mode removes bank-alert delivery and inbox processing from the path; it does not demonstrate a shorter polling interval. Actual confirmation time depends on receipt availability, scan timing, validation and webhook delivery, and requires live measurement.
 - Sweep requests join the current scan and are rate limited. Failed scans back off to at most five minutes.
 - The reader traverses open shadow roots and assigned slots, visits incoming receipt details, and follows recognized Load more/Show more/Next controls.
 - `AMAZON_PAY_MAX_PAGES` bounds scanning (default five); an incomplete backlog reports `BACKLOG` and is not submitted. Selectors/pagination must be verified against the live account layout.

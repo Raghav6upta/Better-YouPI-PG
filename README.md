@@ -1,6 +1,6 @@
 # Better-YouPI-PG
 
-**Amazon Pay receipt verification and WhatsApp checkout OTPs, configured from the admin dashboard.**
+**Verify UPI receipts through Amazon Pay without waiting for bank SMS/email alerts or polling Gmail. Configure Amazon Pay and WhatsApp checkout OTPs from the admin dashboard.**
 
 An experimental fork maintained by [Raghav6upta](https://github.com/Raghav6upta), based on [YouPI PG](https://github.com/youpi-pg/YouPI-PG), originally credited to [Gaurav](https://github.com/gxurav1710) and Zenuxs. The original checkout and payment lifecycle provide the foundation; this fork adds an Amazon Pay observer and simpler account setup.
 
@@ -8,10 +8,15 @@ An experimental fork maintained by [Raghav6upta](https://github.com/Raghav6upta)
 
 ## Why this fork?
 
-The original observer flow depends on bank email/SMS notifications. This fork reads incoming UPI receipts from Amazon Pay's web portal, so Amazon mode does not require Gmail OAuth, email polling or an SMS relay.
+The payment can arrive before the bank's SMS or email alert. A gateway that relies on those alerts must wait for notification delivery and then ingest the message; the Gmail path also polls the inbox.
+
+This fork removes that notification dependency in Amazon mode. It refreshes Amazon Pay's web portal and reads incoming UPI receipts directly, so verification does not need Gmail OAuth, email polling or an SMS relay. When Amazon shows a receipt before the bank alert arrives, the gateway can check it without waiting for that alert.
+
+The observer defaults to a **five-second delay after each completed scan while a payment is active**, and thirty seconds while idle. This reduces avoidable notification waiting; it is not a claim that every payment confirms within five seconds. The imported Gmail poller also defaults to five seconds: the improvement is removing bank-alert delivery and inbox processing from the path. Amazon's receipt update time, scan duration, scheduling and failure backoff still affect detection time.
 
 | Change | Benefit |
 | --- | --- |
+| Direct Amazon Pay receipt observation | Removes the wait for bank SMS/email alerts and Gmail polling in Amazon mode |
 | Amazon Pay admin tab | Connect, sign in, enable, pause and reconnect from one place |
 | Dedicated WhatsApp OTP tab | QR or phone-code linking, saved sessions and a test-message control |
 | Honest OTP failure responses | Checkout does not claim a code was sent when dispatch failed |
@@ -44,6 +49,12 @@ The merchant verifies the webhook HMAC using the raw request body before fulfill
 - Edge or Chrome, or Playwright Chromium: `npx playwright install chromium`.
 - An Amazon account with received UPI receipts for the selected receiving UPI ID. Wallet credits are not UPI receipt evidence.
 - A WhatsApp account you control for sending customer login codes.
+
+### Recommended: a separate Amazon account
+
+Use a dedicated Amazon account and receiving UPI ID for the gateway, separate from your personal shopping and payments. This keeps the saved browser session and receipt history focused on gateway activity; it does not eliminate the matching limitations.
+
+Complete Amazon Pay UPI setup in the Amazon app before connecting the dashboard. If Amazon supports a different sign-in number for your account, the watcher can use that account once its received UPI receipts are visible; a different login number is not a guaranteed setup option. Bank-linked UPI verification still requires the bank-registered mobile number. See [account preparation and phone numbers](docs/FRONTEND_SETUP.md#0-prepare-a-dedicated-amazon-account) and [NPCI's UPI FAQ](https://www.npci.org.in/what-we-do/upi/faqs).
 
 ## Quickstart
 
