@@ -238,3 +238,21 @@ CREATE INDEX IF NOT EXISTS idx_devices_token ON devices (device_token);
 CREATE INDEX IF NOT EXISTS idx_payment_sessions_device ON payment_sessions (device_id);
 
 
+-- Reference consumption and notification intent commit in the payment transaction.
+CREATE TABLE IF NOT EXISTS amazon_payment_receipts (
+    receiving_account_id TEXT NOT NULL REFERENCES payment_receiving_accounts(id),
+    utr TEXT NOT NULL,
+    amazon_reference_id TEXT NOT NULL,
+    observation_id TEXT NOT NULL REFERENCES payment_observations(id),
+    payment_id TEXT UNIQUE REFERENCES payment_sessions(id),
+    PRIMARY KEY (receiving_account_id, utr),
+    UNIQUE (receiving_account_id, amazon_reference_id)
+);
+CREATE TABLE IF NOT EXISTS payment_event_outbox (
+    id TEXT PRIMARY KEY,
+    payment_id TEXT NOT NULL REFERENCES payment_sessions(id),
+    event_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    dispatched_at TEXT,
+    UNIQUE (payment_id, event_type)
+);

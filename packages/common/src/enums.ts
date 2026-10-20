@@ -45,6 +45,7 @@ export enum SellingMode {
  * Android observer layer is completely removed.
  */
 export enum ObserverSource {
+  AMAZON_PAY = 'AMAZON_PAY',
   GMAIL = 'GMAIL',
   GOOGLE_MESSAGES = 'GOOGLE_MESSAGES',
   ANDROID_OBSERVER = 'ANDROID_OBSERVER',

@@ -10,6 +10,16 @@ node_modules/
 .env.test.local
 .env.production
 .env.production.local
+.env.amazon-local
+.env.*
+!.env.example
+!.env.amazon.example
+*.code-workspace
+*.har
+*.trace.zip
+output/
+output/playwright/
+.playwright-cli/
 
 # Databases and Local State
 data/*.sqlite*
@@ -18,7 +28,9 @@ data/browser-sessions/
 data/berry_auth/
 data/test_berry_auth/
 data/backups/
+data/amazon-local-trial.json
 data/whatsapp_session.json
+data/private-notes/
 data/.secrets/
 berrysdk.db*
 .berry-sessions/

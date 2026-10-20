@@ -3321,7 +3321,7 @@
               </div>
 
               <div class="ypg-input-group">
-                <label class="ypg-input-label">Email Address</label>
+                <label class="ypg-input-label">Email Address (optional)</label>
                 <input type="email" class="ypg-input-control" id="authSignupEmail"
                   placeholder="e.g. gaurav@example.com" />
               </div>
@@ -4704,7 +4704,7 @@
         nameInput?.focus();
         return;
       }
-      if (!email || !email.includes('@') || !email.includes('.')) {
+      if (email && (!email.includes('@') || !email.includes('.'))) {
         showOptionToast('Please enter a valid email address');
         emailInput?.focus();
         return;

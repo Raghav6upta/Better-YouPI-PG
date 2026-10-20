@@ -1154,6 +1154,7 @@ export function registerAdminRoutes(server, ctx) {
       platform: info.platform,
       sessionId: info.sessionId,
       isConnected: info.isConnected,
+      error: info.error || null,
       qrCode: qrPayload || qr?.dataUrl || qr?.raw || (typeof qr === 'string' ? qr : null),
       pairingCode: info.pairingCode || null,
       pairingPhone: info.pairingPhone || null
@@ -1237,7 +1238,7 @@ export function registerAdminRoutes(server, ctx) {
     }
   });
 
-  // POST /api/v1/admin/whatsapp/pairing-code - Request 8-digit Pairing Code via Phone Number (bypasses QR rate limit)
+  // POST /api/v1/admin/whatsapp/pairing-code - Request a device-linking code instead of scanning a QR
   server.post('/api/v1/admin/whatsapp/pairing-code', async (req, res) => {
     const berry = ctx.whatsappBerryService;
     if (!berry) {

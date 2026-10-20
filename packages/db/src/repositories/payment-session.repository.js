@@ -478,7 +478,12 @@ export class PaymentSessionRepository {
    * @returns {{ session: any, level: number, sources: string[], tag: string, isFirstSuccess: boolean }}
    */
   recordVerificationSource(sessionId, source, observationId, options = {}) {
-    return this.db.transaction(() => {
+    return this.db.transaction(() => this.recordVerificationSourceInTransaction(sessionId, source, observationId, options));
+  }
+
+  // Caller owns the transaction so receipt consumption and settlement commit together.
+  recordVerificationSourceInTransaction(sessionId, source, observationId, options = {}) {
+      if (!this.db.db.isTransaction) throw new Error('Verification requires an active transaction');
       const session = this.findById(sessionId);
       if (!session) throw new Error(`Payment session not found: ${sessionId}`);
 
@@ -567,7 +572,6 @@ export class PaymentSessionRepository {
         tag,
         isFirstSuccess
       };
-    });
   }
 
   bindDevice(sessionId, deviceId) {

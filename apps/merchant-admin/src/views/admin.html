@@ -1029,6 +1029,10 @@
       <span>🏪</span>
       <span>Daily Merchant Operations</span>
     </button>
+    <button class="main-nav-btn" id="mainNavAmazonPay" onclick="openAmazonPay()">
+      <span>Amazon Pay</span>
+    </button>
+    <button class="main-nav-btn" id="mainNavWhatsApp" onclick="openWhatsApp()"><span>WhatsApp OTP</span></button>
     <button class="main-nav-btn" id="mainNavStoreSettings" onclick="switchSection('storeSettings')">
       <span>⚙️</span>
       <span>Store Settings</span>
@@ -1260,11 +1264,83 @@
       </div>
 
       <!-- SUB-VIEW 1.4: PAYMENT OBSERVERS LIVE STATUS -->
-      <div id="subViewOpsObservers" hidden>
-        <div
-          style="font-size:1.15rem; font-weight:800; color:var(--text-heading); margin-bottom:1rem; display:flex; align-items:center; gap:0.5rem;">
-          <span>📡</span> Payment Observers (SMS & Gmail)
+      <div id="subViewOpsWhatsApp" hidden>
+        <div class="card" id="whatsAppSetupCard">
+          <div class="card-header">
+            <div><div class="card-heading">WhatsApp OTP</div>
+            <p class="card-subtext">Link the WhatsApp account that will send customer login codes. Amazon Pay verifies payments separately. No Gmail or SMS setup is needed.</p></div>
+            <span class="badge badge-warning" id="waHeaderBadge">Checking...</span>
+          </div>
+          <ol id="waLinkSteps" style="line-height:1.8; padding-left:1.4rem;">
+            <li>Choose <strong>Connect WhatsApp</strong> below.</li>
+            <li>On your phone, open WhatsApp &gt; Settings or menu &gt; Linked devices &gt; Link a device, then scan this QR.</li>
+            <li>Wait for <strong>Connected</strong>, then send a test message to a WhatsApp number you control.</li>
+          </ol>
+          <p><span id="waDotIndicator">&#9679;</span> <strong id="waStateTitle">Checking connection...</strong></p>
+          <p id="waPhoneDisplay" class="card-subtext"></p>
+          <div id="waQrBox" style="background:white; border-radius:0.75rem; padding:1rem; width:fit-content; max-width:100%; margin:1rem 0;">
+            <div id="waQrPlaceholder" style="width:240px; max-width:100%; min-height:180px; display:flex; align-items:center; justify-content:center; color:#0f172a;">Choose Connect WhatsApp to get a QR.</div>
+            <img id="waQrImg" alt="WhatsApp device pairing QR" style="width:240px; max-width:100%; height:auto; display:none;" />
+          </div>
+          <p id="waPairingCodeBox" hidden>Enter this code in WhatsApp's Link with phone number screen: <strong id="waPairingCode" style="font-size:1.5rem; letter-spacing:0.15rem;"></strong></p>
+          <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+            <button class="btn btn-primary" id="btnWaConnect" onclick="reconnectWhatsApp()">Connect WhatsApp</button>
+            <button class="btn btn-danger" id="btnWaDisconnect" onclick="disconnectWhatsApp()" style="display:none;">Disconnect</button>
+            <button class="btn btn-secondary" onclick="fetchWhatsAppStatus(true)">Check status</button>
+          </div>
+          <p id="waSetupMessage" role="status" aria-live="polite" style="margin-top:1rem;"></p>
+          <p class="card-subtext">The linked session is saved on this server and reconnects on restart. Your WhatsApp password is never requested. Disconnect removes the saved WhatsApp session.</p>
+          <details style="margin:1rem 0;"><summary>Cannot scan? Link using a phone number</summary>
+            <p class="card-subtext">Enter the sender's WhatsApp number with country code. On your phone choose Linked devices &gt; Link a device &gt; Link with phone number instead.</p>
+            <label>Sender number <input class="form-control" id="waPairingPhone" type="tel" placeholder="919876543210" autocomplete="tel"></label>
+            <button class="btn btn-secondary" id="btnWaPair" onclick="pairWhatsAppByPhone()">Get pairing code</button>
+          </details>
+          <hr style="margin:1.5rem 0; border-color:var(--border);">
+          <label>Test recipient's WhatsApp number <input class="form-control" id="waTestPhone" type="tel" placeholder="919876543210" autocomplete="tel"></label>
+          <button class="btn btn-secondary" id="btnWaTest" onclick="testWhatsAppDelivery()" disabled>Send test message</button>
+          <p id="waTestResult" role="status" aria-live="polite"></p>
+          <p class="card-subtext">After the test arrives, open checkout and request a login OTP on that phone. The six-digit checkout OTP is different from the device pairing code.</p>
+          <button class="btn btn-secondary" onclick="openAmazonPay()">Set up Amazon Pay</button>
         </div>
+      </div>
+
+      <div id="subViewOpsAmazon" hidden>
+        <div class="card" id="amazonPayCard">
+          <div class="card-header">
+            <div class="card-heading">Amazon Pay UPI</div>
+            <span class="badge badge-info" id="amazonPayState">Loading...</span>
+          </div>
+          <p class="card-subtext">Connect once, then let YOUPI check incoming UPI payments in the background.</p>
+          <p id="amazonPayReceiver">Loading receiving UPI ID...</p>
+          <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin:1rem 0;">
+            <button class="btn btn-primary" id="amazonPayLogin" onclick="amazonPayAction('connect')">Connect Amazon Pay</button>
+            <button class="btn btn-success" id="amazonPayEnable" onclick="amazonPayAction('enable')" disabled>Enable verification</button>
+            <button class="btn btn-secondary" id="amazonPayStop" onclick="amazonPayAction('stop')" disabled>Pause</button>
+          </div>
+          <p class="card-subtext">Sign in to Amazon in the browser that opens on this computer, then choose Enable verification. Your Amazon session stays saved here; YOUPI never asks for your password or OTP. Remote servers need a desktop for sign-in.</p>
+          <p class="card-subtext">Payments are matched by UPI ID, amount and time. An unrelated transfer of the same amount could match a checkout.</p>
+          <label id="amazonPayRiskLabel" style="display:block; margin:0.75rem 0;"><input type="checkbox" id="amazonPayRisk" onchange="updateAmazonPayEnable()"> I understand this matching limitation and want to enable verification.</label>
+          <p id="amazonPayMessage" role="status" aria-live="polite">Loading connection status...</p>
+          <p id="amazonPayLastScan" class="card-subtext"></p>
+          <p class="card-subtext">Customer login codes use WhatsApp. <button class="btn btn-secondary" onclick="openWhatsApp()">Set up WhatsApp OTP</button> No Gmail or SMS observer is required.</p>
+          <details id="amazonPayAdvanced" style="margin-top:1rem;">
+          <summary style="cursor:pointer;">Advanced settings</summary>
+          <p class="card-subtext" style="margin-top:0.75rem;">Pause checking before changing settings. Observe only tests the connection without confirming payments.</p>
+          <div style="display:flex; flex-wrap:wrap; gap:1rem; margin:1rem 0;">
+            <label>Receiving account<br><select id="amazonPayAccount" class="form-control" aria-label="Amazon Pay receiving account"></select></label>
+            <label>Verification<br><select id="amazonPayMode" class="form-control"><option value="observe">Observe only (test connection)</option><option value="live">Live payment verification</option></select></label>
+            <label>Browser on server<br><select id="amazonPayChannel" class="form-control"><option value="msedge">Microsoft Edge</option><option value="chrome">Google Chrome</option><option value="chromium">Playwright Chromium</option></select></label>
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin:1rem 0;">
+            <button class="btn btn-secondary" id="amazonPaySave" onclick="saveAmazonPay()">Save settings</button>
+            <button class="btn btn-secondary" id="amazonPayStart" onclick="amazonPayAction('start')">Start with saved settings</button>
+            <button class="btn btn-secondary" id="amazonPayScan" onclick="amazonPayAction('scan')">Check now</button>
+          </div>
+          </details>
+        </div>
+      </div>
+      <div id="subViewOpsObservers" hidden>
+        <div class="card-heading" style="margin-bottom:1rem;">Payment Observers</div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;">
           <!-- Android Companion Card -->
           <div class="card" style="margin-bottom:0;">
@@ -2972,46 +3048,7 @@
             </details>
           </div>
 
-          <!-- WhatsApp Berry Protocol -->
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <div class="card-heading">💬 WhatsApp Berry Protocol</div>
-                <div class="card-subtext">Automated customer login OTP delivery at checkout.</div>
-              </div>
-              <span class="badge badge-warning" id="waHeaderBadge">CHECKING...</span>
-            </div>
 
-            <div
-              style="background:#090d16; border:1px solid var(--border); border-radius:0.75rem; padding:1rem; margin-bottom:1rem;">
-              <div id="waLiveStatusDisplay">
-                <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.35rem;">
-                  <span id="waDotIndicator" style="color:#fbbf24;">●</span>
-                  <strong id="waStateTitle" style="color:#fff;">Pairing Standby</strong>
-                </div>
-                <div id="waPhoneDisplay" style="font-size:0.85rem; color:#94a3b8; font-family:monospace;">
-                  Phone Number: Not Linked
-                </div>
-              </div>
-            </div>
-
-            <div id="waQrBox"
-              style="background:#ffffff; border-radius:0.75rem; padding:1rem; display:inline-block; margin:0 auto 1rem auto; text-align:center;">
-              <div id="waQrPlaceholder"
-                style="width:240px; height:240px; display:flex; align-items:center; justify-content:center; color:#0f172a; font-size:0.85rem; text-align:center; padding:1rem;">
-                Click "Connect / Refresh QR" to pair device
-              </div>
-              <img id="waQrImg" src="" alt="WhatsApp Pairing QR" style="width:240px; height:240px; display:none; image-rendering:pixelated;" onerror="this.style.display='none'; if(document.getElementById('waQrPlaceholder')){ document.getElementById('waQrPlaceholder').style.display='flex'; document.getElementById('waQrPlaceholder').innerText='QR preview unavailable. Click Refresh QR.'; }" />
-            </div>
-
-            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-              <button class="btn btn-primary" id="btnWaConnect" onclick="reconnectWhatsApp()">⚡ Connect / Refresh
-                QR</button>
-              <button class="btn btn-danger" id="btnWaDisconnect" onclick="disconnectWhatsApp()"
-                style="display:none;">🔌 Disconnect</button>
-              <button class="btn btn-secondary" onclick="fetchWhatsAppStatus(true)">🔄 Check Status</button>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -3520,6 +3557,20 @@
     }
 
     // --- NAVIGATION CONTROLLER: 3 HIGH-LEVEL SECTIONS ---
+    function openWhatsApp() {
+      switchSection('operations', 'subViewOpsWhatsApp');
+      document.getElementById('mainNavOperations').classList.remove('active');
+      document.getElementById('mainNavWhatsApp').classList.add('active');
+      window.history.replaceState(null, '', '#whatsapp');
+    }
+
+    function openAmazonPay() {
+      switchSection('operations', 'subViewOpsAmazon');
+      document.getElementById('mainNavOperations').classList.remove('active');
+      document.getElementById('mainNavAmazonPay').classList.add('active');
+      window.history.replaceState(null, '', '#amazon-pay');
+    }
+
     function switchSection(sectionId, targetSubTab = null) {
       activeSection = sectionId;
       manualThemeOverride = null; // Auto-switching restores when navigating tabs
@@ -3574,6 +3625,8 @@
           { id: 'subViewOpsLive', label: '📊 Live Monitor & Slots', viewId: 'subViewOpsLive' },
           { id: 'subViewOpsCounter', label: '🏪 Counter Desk (POS Cashier)', viewId: 'subViewOpsCounter' },
           { id: 'subViewOpsTransactions', label: '💳 Transactions Ledger', viewId: 'subViewOpsTransactions' },
+          { id: 'subViewOpsAmazon', label: 'Amazon Pay', viewId: 'subViewOpsAmazon' },
+          { id: 'subViewOpsWhatsApp', label: 'WhatsApp OTP', viewId: 'subViewOpsWhatsApp' },
           { id: 'subViewOpsObservers', label: '📡 Payment Observers Status', viewId: 'subViewOpsObservers' }
         ];
       } else if (sectionId === 'storeSettings') {
@@ -3589,7 +3642,7 @@
           { id: 'subViewDevCloudflare', label: '☁️ Cloudflare Tunnel', viewId: 'subViewDevCloudflare' },
           { id: 'subViewDevWebhooks', label: '🔐 Webhooks & Secrets', viewId: 'subViewDevWebhooks' },
           { id: 'subViewDevAndroid', label: '📱 Android SMS Hub', viewId: 'subViewDevAndroid' },
-          { id: 'subViewDevProtocols', label: '📧 Gmail & WhatsApp Protocols', viewId: 'subViewDevProtocols' }
+          { id: 'subViewDevProtocols', label: '📧 Gmail Protocols', viewId: 'subViewDevProtocols' }
         ];
       } else if (sectionId === 'security') {
         items = [
@@ -3641,6 +3694,8 @@
       }
       if (subViewId === 'subViewOpsTransactions') fetchPaymentsLedger();
       if (subViewId === 'subViewOpsObservers') fetchObserversStatus();
+      if (subViewId === 'subViewOpsAmazon') fetchAmazonPayStatus(true);
+      if (subViewId === 'subViewOpsWhatsApp') fetchWhatsAppStatus();
       if (subViewId === 'subViewDevAndroid') {
         fetchObserversStatus();
         fetchSmsPairQr();
@@ -4971,6 +5026,117 @@
     }
 
     // --- ANDROID SMS OBSERVER FUNCTIONS ---
+    let amazonPayLoaded = false;
+    let amazonPayRequest = false;
+    let amazonPayStatus = null;
+    let amazonPayActing = false;
+    function updateAmazonPayEnable() {
+      const data = amazonPayStatus;
+      document.getElementById('amazonPayEnable').disabled = !data?.config || data.busy || data.external || amazonPayActing ||
+        (data.config.mode !== 'live' && !document.getElementById('amazonPayRisk').checked) ||
+        (data.health?.status === 'UP' && data.config.mode === 'live');
+    }
+    async function fetchAmazonPayStatus(refreshForm = false) {
+      if (amazonPayRequest) return;
+      amazonPayRequest = true;
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/admin/amazon-pay`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not load Amazon Pay status.');
+        const previousConfig = JSON.stringify(amazonPayStatus?.config);
+        amazonPayStatus = data;
+        const badge = document.getElementById('amazonPayState');
+        badge.dataset.state = data.state;
+        badge.textContent = ({ READY: data.config?.mode === 'live' ? 'Connected' : 'Test mode', STOPPED: 'Paused',
+          NOT_CONFIGURED: 'Not connected', LOGIN_OPEN: 'Sign in to Amazon', LOGIN_CLOSED: 'Ready to check',
+          LOGIN_REQUIRED: 'Sign in again', STARTING: 'Checking connection', OPENING_LOGIN: 'Opening sign-in' })[data.state] || data.state.replaceAll('_', ' ');
+        const activeAccount = data.accounts.find(a => a.isActive);
+        document.getElementById('amazonPayReceiver').textContent = `Receiving UPI ID: ${data.config?.receiverVpa || activeAccount?.upiId || 'Add an active account in Store Settings first.'}`;
+        if (!amazonPayLoaded || refreshForm || previousConfig !== JSON.stringify(data.config)) {
+          const select = document.getElementById('amazonPayAccount');
+          select.replaceChildren();
+          for (const account of data.accounts) {
+            const option = new Option(`${account.upiId}${account.isActive ? ' (active)' : ' (inactive)'}`, account.id);
+            option.disabled = !account.isActive;
+            select.add(option);
+          }
+          if (data.config) {
+            select.value = data.config.receivingAccountId;
+            document.getElementById('amazonPayMode').value = data.config.mode;
+            document.getElementById('amazonPayChannel').value = data.config.channel;
+          } else {
+            if (activeAccount) select.value = activeAccount.id;
+            document.getElementById('amazonPayChannel').value = data.defaultChannel;
+          }
+          amazonPayLoaded = true;
+        }
+        const running = !!data.health && !data.external;
+        for (const id of ['amazonPaySave', 'amazonPayAccount', 'amazonPayMode', 'amazonPayChannel']) {
+          document.getElementById(id).disabled = amazonPayActing || data.busy || running || data.external || data.state === 'LOGIN_OPEN';
+        }
+        document.getElementById('amazonPayLogin').disabled = amazonPayActing || data.busy || data.external || !activeAccount;
+        document.getElementById('amazonPayLogin').textContent = data.config ? 'Reconnect Amazon Pay' : 'Connect Amazon Pay';
+        document.getElementById('amazonPayStart').disabled = amazonPayActing || data.busy || data.external || !data.config;
+        document.getElementById('amazonPayRiskLabel').hidden = data.config?.mode === 'live';
+        updateAmazonPayEnable();
+        document.getElementById('amazonPayScan').disabled = data.busy || !running;
+        document.getElementById('amazonPayStop').disabled = data.busy || data.external || !data.config;
+        const messages = {
+          NOT_CONFIGURED: 'Choose Connect Amazon Pay to sign in. Your active UPI account is selected automatically.',
+          STOPPED: 'Checking is paused. Enable verification to use your saved session, or reconnect to sign in again.',
+          LOGIN_OPEN: 'Complete sign-in in the Amazon browser, then choose Enable verification here.',
+          LOGIN_CLOSED: 'Choose Enable verification to check your saved Amazon session.',
+          LOGIN_REQUIRED: 'Your Amazon session needs sign-in again. Choose Reconnect Amazon Pay.',
+          READY: data.config?.mode === 'live' ? 'Connected. Incoming UPI payments can now be verified.' : 'Connected in observe-only mode. Payments will not be marked paid.',
+          EXTERNAL_OBSERVER: 'An observer started outside this dashboard is running. Stop it before using these setup controls.',
+          ACCOUNT_UNVERIFIED: 'No matching received transaction was found. Check that this Amazon account receives money at the selected UPI ID.',
+          RECEIPT_REJECTED: 'A receipt could not be validated against the selected receiving account. Payment verification is paused.',
+          PAGE_UNAVAILABLE: 'Amazon history could not be read. Try signing in again.',
+          API_UNAVAILABLE: 'The observer could not deliver receipts to the payment API. It will retry.'
+        };
+        document.getElementById('amazonPayMessage').textContent = data.error || (data.health?.lastFailure === 'AMAZON_TEMPORARILY_UNAVAILABLE'
+          ? 'Amazon is temporarily returning a service error. Your login is saved; checking will retry automatically.'
+          : messages[data.state] || 'Working… Status updates automatically.');
+        document.getElementById('amazonPayLastScan').textContent = data.health?.lastScanAt
+          ? `Last successful check: ${new Date(data.health.lastScanAt).toLocaleString()} · ${data.health.receiptsValidated} receipts validated. Starts automatically after a server restart while enabled.`
+          : 'No successful check yet.';
+      } catch (error) { document.getElementById('amazonPayMessage').textContent = error.message; }
+      finally { amazonPayRequest = false; }
+    }
+    async function saveAmazonPay() {
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/admin/amazon-pay/config`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ receivingAccountId: document.getElementById('amazonPayAccount').value,
+            mode: document.getElementById('amazonPayMode').value, channel: document.getElementById('amazonPayChannel').value,
+            acceptSlotRisk: amazonPayStatus?.config?.mode === 'live' || document.getElementById('amazonPayRisk').checked })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Could not save settings.');
+        await fetchAmazonPayStatus(true);
+      } catch (error) { document.getElementById('amazonPayMessage').textContent = error.message; }
+    }
+    async function amazonPayAction(action) {
+      if (amazonPayActing) return;
+      amazonPayActing = true;
+      for (const id of ['amazonPayLogin', 'amazonPayEnable', 'amazonPayStart', 'amazonPayStop', 'amazonPayScan']) document.getElementById(id).disabled = true;
+      try {
+        const response = await fetch(`${API_BASE}/api/v1/admin/amazon-pay/action`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action,
+            acceptSlotRisk: document.getElementById('amazonPayRisk').checked,
+            channel: document.getElementById('amazonPayChannel').value })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Amazon Pay action failed.');
+        amazonPayActing = false;
+        await fetchAmazonPayStatus();
+      } catch (error) { document.getElementById('amazonPayMessage').textContent = error.message; }
+      finally { amazonPayActing = false; updateAmazonPayEnable(); }
+    }
+    setInterval(() => {
+      if (!document.getElementById('sectionOperations').hidden && !document.getElementById('subViewOpsAmazon').hidden) fetchAmazonPayStatus();
+    }, 4000);
+
     async function fetchObserversStatus() {
       fetchSmsGatewayDevices();
       fetchSmsPairQr();
@@ -5372,116 +5538,99 @@
     function closeGmailGuideModal() { document.getElementById('gmailGuideModal').hidden = true; }
 
     // --- WHATSAPP BERRY PROTOCOL ---
+    let waBusy = false;
+    async function whatsAppRequest(action, body) {
+      const response = await fetch(`${API_BASE}/api/v1/admin/whatsapp/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {})
+      });
+      const data = await response.json();
+      if (!response.ok || data.success === false) throw new Error(data.error || data.message || 'WhatsApp request failed.');
+      return data;
+    }
+
     async function fetchWhatsAppStatus(isManual = false) {
       try {
         const res = await fetch(`${API_BASE}/api/v1/admin/whatsapp/status`);
-        if (!res.ok) return;
+        if (!res.ok) throw new Error('Could not read WhatsApp status. Unlock the dashboard and try again.');
         const data = await res.json();
-
+        const connected = data.status === 'CONNECTED' && data.isConnected === true;
+        const hasQr = data.status === 'QR_READY' && typeof data.qrCode === 'string' && data.qrCode.startsWith('data:image/');
+        const pairing = data.status === 'PAIRING_CODE_READY' && Boolean(data.pairingCode);
+        document.getElementById('waLinkSteps').hidden = connected;
         const badge = document.getElementById('waHeaderBadge');
-        const dot = document.getElementById('waDotIndicator');
-        const title = document.getElementById('waStateTitle');
-        const phoneDisplay = document.getElementById('waPhoneDisplay');
-        const qrBox = document.getElementById('waQrBox');
-        const qrImg = document.getElementById('waQrImg');
-        const qrPlaceholder = document.getElementById('waQrPlaceholder');
-        const btnDisconnect = document.getElementById('btnWaDisconnect');
-        const btnConnect = document.getElementById('btnWaConnect');
-
-        if (data.status === 'CONNECTED') {
-          if (badge) { badge.className = 'badge badge-success'; badge.innerText = 'CONNECTED'; }
-          if (dot) dot.style.color = '#10b981';
-          if (title) title.innerText = 'WhatsApp Connected & Active';
-          if (phoneDisplay) phoneDisplay.innerHTML = `Linked Phone: <strong style="color:#34d399;">${data.phoneNumber || 'Linked Device'}</strong>`;
-          if (qrBox) qrBox.style.display = 'none';
-          if (btnDisconnect) btnDisconnect.style.display = 'inline-block';
-          if (btnConnect) btnConnect.innerText = '🔄 Re-Pair Device';
-        } else if (data.status === 'QR_READY') {
-          if (badge) { badge.className = 'badge badge-warning'; badge.innerText = 'QR READY'; }
-          if (dot) dot.style.color = '#fbbf24';
-          if (title) title.innerText = 'Scan QR Code with WhatsApp';
-          if (phoneDisplay) phoneDisplay.innerText = 'Awaiting pairing scan from merchant WhatsApp handset';
-          if (qrBox) qrBox.style.display = 'inline-block';
-          if (btnDisconnect) btnDisconnect.style.display = 'none';
-          if (btnConnect) btnConnect.innerText = '🔄 Refresh QR Code';
-
-          if (data.qrCode && qrImg && qrPlaceholder) {
-            let qrSrc = data.qrCode;
-            if (typeof qrSrc === 'string' && !qrSrc.startsWith('data:image/') && !qrSrc.startsWith('http')) {
-              if (qrSrc.startsWith('<svg')) {
-                qrSrc = 'data:image/svg+xml;utf8,' + encodeURIComponent(qrSrc);
-              }
-            }
-
-            if (qrSrc && (qrSrc.startsWith('data:image/') || qrSrc.startsWith('http'))) {
-              qrImg.src = qrSrc;
-              qrImg.style.display = 'block';
-              qrPlaceholder.style.display = 'none';
-            } else {
-              qrImg.style.display = 'none';
-              qrPlaceholder.style.display = 'flex';
-              qrPlaceholder.innerText = 'Preparing pairing QR... Click "Refresh QR Code"';
-            }
-          }
-        } else if (data.status === 'CONNECTING') {
-          if (badge) { badge.className = 'badge badge-info'; badge.innerText = 'CONNECTING'; }
-          if (dot) dot.style.color = '#38bdf8';
-          if (title) title.innerText = 'Connecting to WhatsApp...';
-          if (phoneDisplay) phoneDisplay.innerText = 'Establishing secure WhatsApp pairing session...';
-          if (qrBox) qrBox.style.display = 'inline-block';
-          if (qrImg) qrImg.style.display = 'none';
-          if (qrPlaceholder) {
-            qrPlaceholder.style.display = 'flex';
-            qrPlaceholder.innerText = 'Generating official WhatsApp pairing QR...';
-          }
-          if (btnDisconnect) btnDisconnect.style.display = 'none';
-          if (btnConnect) btnConnect.innerText = '⏳ Connecting...';
-        } else {
-          if (badge) { badge.className = 'badge badge-danger'; badge.innerText = 'DISCONNECTED'; }
-          if (dot) dot.style.color = '#ef4444';
-          if (title) title.innerText = 'Session Disconnected';
-          if (phoneDisplay) phoneDisplay.innerText = 'No WhatsApp session active';
-          if (qrBox) qrBox.style.display = 'inline-block';
-          if (qrImg) qrImg.style.display = 'none';
-          if (qrPlaceholder) {
-            qrPlaceholder.style.display = 'flex';
-            qrPlaceholder.innerText = 'Click "Connect WhatsApp" to pair device';
-          }
-          if (btnDisconnect) btnDisconnect.style.display = 'none';
-          if (btnConnect) btnConnect.innerText = '⚡ Connect WhatsApp';
-        }
-
-        if (isManual) showAdminToast('WhatsApp session status: ' + data.status);
-      } catch (e) { }
-    }
-
-    async function reconnectWhatsApp() {
-      const btn = document.getElementById('btnWaConnect');
-      const oldText = btn.innerText;
-      btn.disabled = true;
-      btn.innerText = '⏳ Initializing Pairing...';
-
-      try {
-        const res = await fetch(`${API_BASE}/api/v1/admin/whatsapp/reconnect`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        await fetchWhatsAppStatus();
-      } catch (e) {
-        alert('Network error initiating WhatsApp pairing');
-      } finally {
-        btn.disabled = false;
-        btn.innerText = oldText;
+        badge.dataset.state = data.status;
+        badge.className = 'badge ' + (connected ? 'badge-success' : 'badge-warning');
+        badge.textContent = connected ? 'Connected' : (hasQr ? 'Scan QR' : (pairing ? 'Enter pairing code' : (data.status === 'CONNECTING' ? 'Connecting...' : 'Disconnected')));
+        document.getElementById('waDotIndicator').style.color = connected ? '#10b981' : '#fbbf24';
+        document.getElementById('waStateTitle').textContent = connected ? 'Ready to send checkout OTPs' : badge.textContent;
+        document.getElementById('waPhoneDisplay').textContent = connected ? 'Linked sender: ' + (data.phoneNumber || 'WhatsApp device') : 'Link the WhatsApp account that will send login codes.';
+        document.getElementById('waQrBox').style.display = connected || pairing ? 'none' : 'block';
+        const img = document.getElementById('waQrImg');
+        img.style.display = hasQr ? 'block' : 'none';
+        if (hasQr) img.src = data.qrCode; else img.removeAttribute('src');
+        const placeholder = document.getElementById('waQrPlaceholder');
+        placeholder.style.display = hasQr ? 'none' : 'flex';
+        placeholder.textContent = data.status === 'CONNECTING' ? 'Waiting for WhatsApp. The QR will appear here.' : 'Choose Connect WhatsApp to get a QR.';
+        document.getElementById('waPairingCodeBox').hidden = !pairing;
+        document.getElementById('waPairingCode').textContent = pairing ? data.pairingCode : '';
+        document.getElementById('btnWaConnect').hidden = connected;
+        document.getElementById('btnWaConnect').textContent = hasQr ? 'Refresh QR' : 'Connect WhatsApp';
+        document.getElementById('btnWaDisconnect').style.display = connected || hasQr || pairing ? 'inline-block' : 'none';
+        document.getElementById('btnWaPair').disabled = waBusy || connected;
+        document.getElementById('btnWaTest').disabled = waBusy || !connected;
+        if (data.error) document.getElementById('waSetupMessage').textContent = data.error;
+        if (isManual) document.getElementById('waSetupMessage').textContent = 'Status checked: ' + badge.textContent;
+      } catch (error) {
+        document.getElementById('btnWaTest').disabled = true;
+        document.getElementById('waHeaderBadge').className = 'badge badge-warning';
+        document.getElementById('waHeaderBadge').textContent = 'Unavailable';
+        document.getElementById('waStateTitle').textContent = 'Connection status unavailable';
+        document.getElementById('waSetupMessage').textContent = error.message;
       }
     }
 
-    async function disconnectWhatsApp() {
-      if (!confirm('Disconnect WhatsApp session and wipe credentials?')) return;
+    async function runWhatsAppAction(action, body) {
+      if (waBusy) return;
+      waBusy = true;
+      for (const id of ['btnWaConnect', 'btnWaPair', 'btnWaDisconnect', 'btnWaTest']) document.getElementById(id).disabled = true;
+      document.getElementById('waSetupMessage').textContent = 'Please wait...';
       try {
-        await fetch(`${API_BASE}/api/v1/admin/whatsapp/disconnect`, { method: 'POST' });
+        const result = await whatsAppRequest(action, body);
+        document.getElementById('waSetupMessage').textContent = action === 'disconnect' ? 'WhatsApp disconnected. Saved session removed.' : 'Follow the linking instructions above. This page updates automatically.';
+        return result;
+      } catch (error) {
+        document.getElementById('waSetupMessage').textContent = error.message;
+      } finally {
+        waBusy = false;
+        for (const id of ['btnWaConnect', 'btnWaPair', 'btnWaDisconnect']) document.getElementById(id).disabled = false;
         await fetchWhatsAppStatus();
-        showAdminToast('WhatsApp session disconnected.');
-      } catch (e) { }
+      }
+    }
+
+    async function reconnectWhatsApp() { await runWhatsAppAction('reconnect'); }
+    async function pairWhatsAppByPhone() {
+      const phoneNumber = document.getElementById('waPairingPhone').value.trim();
+      if (!/^[+\d\s()-]{10,20}$/.test(phoneNumber)) {
+        document.getElementById('waSetupMessage').textContent = 'Enter the sender phone number, including country code.';
+        return;
+      }
+      await runWhatsAppAction('pairing-code', { phoneNumber });
+    }
+    async function disconnectWhatsApp() {
+      if (confirm('Disconnect WhatsApp and remove its saved session? Checkout OTPs will stop until you reconnect.')) await runWhatsAppAction('disconnect');
+    }
+    async function testWhatsAppDelivery() {
+      const to = document.getElementById('waTestPhone').value.trim();
+      const output = document.getElementById('waTestResult');
+      if (!/^[+\d\s()-]{10,20}$/.test(to)) { output.textContent = 'Enter a WhatsApp number you control, including country code.'; return; }
+      document.getElementById('btnWaTest').disabled = true;
+      output.textContent = 'Sending test message...';
+      try {
+        const data = await whatsAppRequest('test-message', { to, message: 'YOUPI setup test: your WhatsApp connection can send messages. Next, request a login OTP from checkout.' });
+        if (!data.delivered || data.simulated) throw new Error('No real message was sent. Check your WhatsApp connection.');
+        output.textContent = 'Message sent. Check the recipient phone, then try a checkout OTP.';
+      } catch (error) { output.textContent = error.message; }
+      finally { await fetchWhatsAppStatus(); }
     }
 
     // --- FLOATING CASHIER MODALS DOCK ---
@@ -7113,10 +7262,14 @@
     const hashSec = (window.location.hash || '').replace('#', '').trim();
     const searchSec = new URLSearchParams(window.location.search).get('section');
     const initialSec = validSections.includes(hashSec) ? hashSec : (validSections.includes(searchSec) ? searchSec : 'operations');
-    switchSection(initialSec);
+    if (hashSec === 'amazon-pay' || searchSec === 'amazon-pay') openAmazonPay();
+    else if (hashSec === 'whatsapp' || searchSec === 'whatsapp') openWhatsApp();
+    else switchSection(initialSec);
 
     window.addEventListener('hashchange', () => {
       const h = (window.location.hash || '').replace('#', '').trim();
+      if (h === 'amazon-pay') { openAmazonPay(); return; }
+      if (h === 'whatsapp') { openWhatsApp(); return; }
       if (validSections.includes(h) && h !== activeSection) {
         switchSection(h);
       }

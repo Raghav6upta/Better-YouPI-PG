@@ -1,0 +1,55 @@
+{
+  "package": "libsignal",
+  "version": "6.0.0",
+  "files": [
+    {
+      "file": "src/session_record.js",
+      "before": "604d6d8ded9d316f7e8367c45759f6449be743c5aabe142db3412eff4e89ab35",
+      "after": "99964c74339872e2f5d5b7e26a4775975b5b17a7d3bbf3414522b5290e0bbffb",
+      "replacements": [
+        [
+          "console.warn(\"Session already closed\", session);",
+          "console.warn(\"Session already closed\");"
+        ],
+        [
+          "console.info(\"Closing session:\", session);",
+          "/* Session contents must never be logged. */"
+        ],
+        [
+          "console.info(\"Opening session:\", session);",
+          "/* Session contents must never be logged. */"
+        ],
+        [
+          "console.info(\"Removing old closed session:\", oldestSession);",
+          "/* Session contents must never be logged. */"
+        ],
+        [
+          "console.error('V1 session storage migration error: registrationId',\n                                  data.registrationId, 'for open session version',\n                                  data.version);",
+          "console.error('Session storage migration failed.');"
+        ]
+      ]
+    },
+    {
+      "file": "src/queue_job.js",
+      "before": "d581518bab0da98ddc71cd6616bab769e0de413ec007454b7d42804ee3f244f3",
+      "after": "d90422d561b9cba463898981726da5c1705dbbed725f7700e05be910d0bbc5d2",
+      "replacements": [
+        [
+          "console.warn(\"Unhandled bucket type (for naming):\", typeof bucket, bucket);",
+          "console.warn(\"Unhandled queue bucket type.\");"
+        ]
+      ]
+    },
+    {
+      "file": "src/session_cipher.js",
+      "before": "031b3282489ffec6a0cab23520bdf956a5bf4d15c57cb868e89fa6643255cd2b",
+      "after": "b1b1ccf121d2b8d4882a71aa0d59bc945326e25677d0d477e2375ca00ca05b45",
+      "replacements": [
+        [
+          "console.error(\"Session error:\" + e, e.stack);",
+          "console.error(\"Session decryption failed.\");"
+        ]
+      ]
+    }
+  ]
+}

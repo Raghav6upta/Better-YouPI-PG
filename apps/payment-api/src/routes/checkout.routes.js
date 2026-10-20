@@ -1,6 +1,7 @@
 import { HttpServer } from '../server.js';
 import { toRupeesString, buildUpiUri, PaymentStatus, PaymentMethod, UPI_PROVIDERS, isInternalServiceRequest } from '@youpi/common';
 import { validateSessionDeviceAccess } from '@youpi/core';
+import { getObserverToken, getAmazonPayConfig } from '@youpi/common';
 
 /**
  * Validates device access to an active payment session.
@@ -98,6 +99,23 @@ function checkSessionDeviceAccess(session, req, body = null, ctx = null) {
  * If either is missing, unconfigured, or offline, status is ISSUES with downtime warning.
  */
 async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFFLINE', merchantId = '00000000-0000-0000-0000-000000000001') {
+  if (process.env.AMAZON_PAY_ENABLED === 'true') {
+    let healthy = false;
+    try {
+      const account = ctx.accountRepo.findActiveForMerchant(merchantId);
+      const response = await fetch(`http://127.0.0.1:${Number(process.env.AMAZON_PAY_OBSERVER_PORT || 6004)}/health`, {
+        headers: { Authorization: `Bearer ${getObserverToken()}` }, signal: AbortSignal.timeout(800) });
+      const health = await response.json();
+      healthy = getAmazonPayConfig().canSettle && response.ok && health.status === 'UP' && health.dryRun === false && health.canSettle === true &&
+        health.receivingAccountId === account?.id && health.receiverVpa === account?.upiId?.toLowerCase() &&
+        Date.now() - Date.parse(health.lastScanAt) < 90_000;
+    } catch {}
+    return { status: healthy ? 'WORKING' : 'ISSUES', tier: healthy ? 'GREEN' : 'RED',
+      label: healthy ? 'Payment verification connected' : 'Payment verification unavailable',
+      isWorking: healthy, amazonPayHealthy: healthy, smsHealthy: false, gmailHealthy: false,
+      reason: healthy ? 'Amazon Pay receipt observer is active' : 'Amazon Pay observer requires attention',
+      warning: healthy ? null : 'Payment confirmation may be delayed.', recommendedAlternative: null };
+  }
   // 0. Check False Narrative Dev Switch (Active for 10 minutes from enabling time)
   try {
     const merchant = ctx.merchantRepo?.findById ? ctx.merchantRepo.findById(merchantId) : null;
@@ -920,6 +938,18 @@ export function registerCheckoutRoutes(server, ctx) {
     }
 
     const updated = ctx.timingEngine.handlePaymentDone(params.id);
+
+    // A receipt may arrive before the customer submits their reference.
+    if (process.env.AMAZON_PAY_ENABLED === 'true') {
+      for (const observation of ctx.obsRepo.findUnattributed(session.receivingAccountId)) {
+        if (observation.source === 'AMAZON_PAY') ctx.attributionEngine.processObservation(observation);
+      }
+      const settled = ctx.sessionRepo.findById(session.id);
+      if (settled.status === PaymentStatus.SUCCESS) {
+        HttpServer.json(res, 200, { paymentId: settled.id, status: settled.status });
+        return;
+      }
+    }
 
     // Broadcast SSE update
     server.broadcastSse(params.id, 'status_change', {

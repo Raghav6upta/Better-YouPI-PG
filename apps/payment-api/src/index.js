@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PaymentStatus } from '@youpi/common';
+import { getObserverToken, getAmazonPayConfig } from '@youpi/common';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +46,8 @@ import { registerPaymentRoutes } from './routes/payments.routes.js';
 import { registerCheckoutRoutes } from './routes/checkout.routes.js';
 import { registerPollerRoutes } from './routes/pollers.routes.js';
 import { registerAdminRoutes } from './routes/admin.routes.js';
+import { registerAmazonPayRoutes } from './routes/amazon-pay.routes.js';
+import { AmazonPayService } from './services/amazon-pay.service.js';
 import { registerCustomerRoutes } from './routes/customer.routes.js';
 import { registerDeviceRoutes } from './routes/device.routes.js';
 import { getWhatsAppBerryService, WhatsAppBerryService } from './services/whatsapp-berry.service.js';
@@ -159,7 +162,9 @@ export function createPaymentApp(customDb = null, options = {}) {
         verificationTag: data.verificationTag || session.verificationTag,
         sources: data.sources || session.verificationSources
       });
-      webhookEngine.dispatch('SUCCESS', session).catch(() => {});
+      if (session.verificationSources?.includes('AMAZON_PAY')) {
+        webhookEngine.flushPendingEvents().catch(() => {});
+      } else webhookEngine.dispatch('SUCCESS', session).catch(() => {});
       handleSlotFreedAndPromote(session.receivingAccountId);
     }
   });
@@ -233,7 +238,18 @@ export function createPaymentApp(customDb = null, options = {}) {
   // Continues polling for remaining sources until Level 3 (Triple Verification) is reached or 30s window finishes!
   const activeSweepTimers = new Set();
 
+  let amazonSweepPending = false;
+  function sweepAmazon() {
+    if (amazonSweepPending) return;
+    amazonSweepPending = true;
+    fetch(`http://127.0.0.1:${Number(process.env.AMAZON_PAY_OBSERVER_PORT || 6004)}/api/sweep`, {
+      method: 'POST', headers: { Authorization: `Bearer ${getObserverToken()}` }, signal: AbortSignal.timeout(1500)
+    }).catch(() => {}).finally(() => { amazonSweepPending = false; });
+  }
+  eventEmitter.on('SESSION.ACTIVATED', () => { if (getAmazonPayConfig().enabled) sweepAmazon(); });
+
   eventEmitter.on('SESSION.PROCESSING', (data) => {
+    if (getAmazonPayConfig().enabled) { sweepAmazon(); return; }
     const sessionId = data.sessionId;
     let sweepCount = 0;
     const maxSweeps = 20; // 20 sweeps * 1.5s = 30 seconds
@@ -341,6 +357,11 @@ export function createPaymentApp(customDb = null, options = {}) {
   // Continuous 1-Second Aggressive Polling Daemon across SMS Gateway & Gmail Observers
   const aggressivePollerDaemon = setInterval(async () => {
     try {
+      if (getAmazonPayConfig().enabled) {
+        const active = db.queryOne("SELECT id FROM payment_sessions WHERE status IN ('ACTIVE', 'PROCESSING') AND method = 'UPI' LIMIT 1");
+        if (active) sweepAmazon();
+        return;
+      }
       // Find all active/processing sessions currently waiting for bank confirmation
       const activeSessions = db.query(`
         SELECT id, receiving_account_id, amount_paise, status
@@ -384,6 +405,17 @@ export function createPaymentApp(customDb = null, options = {}) {
   }, 1000);
 
   if (aggressivePollerDaemon.unref) aggressivePollerDaemon.unref();
+
+  let deliveringWebhooks = false;
+  const deliverPendingWebhooks = async () => {
+    if (deliveringWebhooks) return;
+    deliveringWebhooks = true;
+    try { await webhookEngine.flushPendingEvents(); await webhookEngine.retryPending(); }
+    catch (error) { console.error('[Webhook recovery]', error.message); }
+    finally { deliveringWebhooks = false; }
+  };
+  const webhookRetryTimer = setInterval(deliverPendingWebhooks, 5000);
+  webhookRetryTimer.unref?.();
 
   // Execute crash recovery on boot
   const recoveryStats = recoveryEngine.recover();
@@ -439,10 +471,18 @@ export function createPaymentApp(customDb = null, options = {}) {
   registerCheckoutRoutes(server, context);
   registerPollerRoutes(server, context);
   registerAdminRoutes(server, context);
+  const amazonPayService = options.amazonPayService || new AmazonPayService({ merchantRepo, accountRepo, db });
+  context.amazonPayService = amazonPayService;
+  registerAmazonPayRoutes(server, amazonPayService);
+  if (!isCustom && amazonPayService.config?.autoStart) {
+    void amazonPayService.execute('start').catch(() => {});
+  }
   registerCustomerRoutes(server, context);
   registerDeviceRoutes(server, context);
 
   function destroy() {
+    const amazonClosed = amazonPayService.close();
+    clearInterval(webhookRetryTimer);
     clearInterval(queueSyncDaemon);
     clearInterval(aggressivePollerDaemon);
     for (const timer of activeSweepTimers) {
@@ -453,6 +493,7 @@ export function createPaymentApp(customDb = null, options = {}) {
     if (typeof attributionEngine.destroy === 'function') {
       attributionEngine.destroy();
     }
+    return amazonClosed;
   }
 
   return {
@@ -475,10 +516,10 @@ export function startServer(port = null, customDb = null) {
       resolve({
         app,
         port: finalPort,
-        close: () => new Promise(cb => {
-          app.destroy();
-          instance.close(cb);
-        })
+        close: async () => {
+          await app.destroy();
+          await new Promise(cb => instance.close(cb));
+        }
       });
     });
   });
@@ -486,5 +527,9 @@ export function startServer(port = null, customDb = null) {
 
 // Auto-run if executed directly as main script
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  startServer();
+  startServer().then(runtime => {
+    const shutdown = () => { void runtime.close().then(() => process.exit(0)); };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  });
 }

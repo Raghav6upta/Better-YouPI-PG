@@ -1,0 +1,17 @@
+{
+  "name": "amazon-pay-observer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "login": "node src/index.js --login",
+    "test": "node --test src/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "@youpi/common": "*",
+    "@youpi/core": "*",
+    "@youpi/observer-sdk": "*",
+    "playwright": "^1.56.1"
+  }
+}

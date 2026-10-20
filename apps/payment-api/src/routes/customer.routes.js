@@ -123,18 +123,18 @@ export function registerCustomerRoutes(server, ctx) {
       return;
     }
 
-    // If new user signing up, validate name and email
+    // WhatsApp verifies identity; an email address is optional.
     if (!existingUser && isNewUser) {
       if (!name) {
         HttpServer.json(res, 400, { error: 'Full name is required for registration.' });
         return;
       }
-      if (!email || !isValidEmail(email)) {
-        HttpServer.json(res, 400, { error: 'A valid email address is required for registration.' });
+      if (email && !isValidEmail(email)) {
+        HttpServer.json(res, 400, { error: 'Please enter a valid email address or leave it blank.' });
         return;
       }
       // Check unique email
-      const existingByEmail = ctx.customerRepo.findByEmail(email);
+      const existingByEmail = email ? ctx.customerRepo.findByEmail(email) : null;
       if (existingByEmail) {
         HttpServer.json(res, 409, { error: 'An account with this email address already exists. Please log in.' });
         return;
@@ -159,29 +159,40 @@ export function registerCustomerRoutes(server, ctx) {
 
     // Dispatch via WhatsApp Berry Protocol
     const berry = getBerry();
-    let dispatchResult = { success: true, delivered: false, simulated: true };
+    let dispatchResult = { success: false, delivered: false };
     const displayName = existingUser?.name || name || '';
 
     if (berry) {
       try {
         dispatchResult = await berry.sendOtp(cleanMobile, otpCode, displayName);
       } catch (err) {
-        console.warn(`[CustomerAuth] WhatsApp dispatch notice: ${err.message}`);
+        console.warn('[CustomerAuth] WhatsApp OTP dispatch failed.');
       }
     } else {
-      console.log(`[CustomerAuth] Berry service not loaded; OTP for ${cleanMobile} was not delivered.`);
+      console.log('[CustomerAuth] WhatsApp service unavailable; OTP was not sent.');
     }
 
-    console.log(`[CustomerAuth] OTP generated for +91${cleanMobile} (expires in 5 mins)`);
+    const exposeDevOtp = process.env.YOUPI_EXPOSE_DEV_OTP === 'true' && process.env.NODE_ENV !== 'production';
+    const sent = dispatchResult?.success === true && dispatchResult?.delivered === true && dispatchResult?.simulated !== true;
+    if (!sent && !exposeDevOtp) {
+      pendingOtpChallenges.delete(cleanMobile);
+      if (existingUser) ctx.customerRepo.setOtp(cleanMobile, null, null);
+      HttpServer.json(res, 503, {
+        success: false,
+        code: 'OTP_DELIVERY_UNAVAILABLE',
+        error: 'WhatsApp verification is unavailable. Please ask the store to connect WhatsApp, then try again.'
+      });
+      return;
+    }
 
     HttpServer.json(res, 200, {
       success: true,
-      message: 'OTP sent to your WhatsApp number.',
+      message: sent ? 'OTP sent to your WhatsApp number.' : 'Development code generated; WhatsApp delivery was not used.',
       mobileNumber: cleanMobile,
       expiresInSeconds: 300,
       // Returning the OTP lets anyone log in as any number: only on explicit opt-in, never in production.
-      devOtp: (process.env.YOUPI_EXPOSE_DEV_OTP === 'true' && process.env.NODE_ENV !== 'production' ? otpCode : undefined),
-      dispatch: dispatchResult
+      devOtp: exposeDevOtp ? otpCode : undefined,
+      dispatch: { success: sent, delivered: sent }
     });
   });
 

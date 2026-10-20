@@ -1,4 +1,6 @@
 import { PaymentStatus, ObservationAttributionStatus, TicketStatus, SenderType } from '@youpi/common';
+import { reconcileAmazonPay } from './amazon-pay.js';
+import { getAmazonPayConfig } from '@youpi/common';
 
 export class AttributionEngine {
   /**
@@ -52,6 +54,10 @@ export class AttributionEngine {
    * }}
    */
   processObservation(normalizedObs) {
+    if (normalizedObs.source === 'AMAZON_PAY') return reconcileAmazonPay(this, normalizedObs);
+    if (getAmazonPayConfig().enabled && normalizedObs.source !== 'MANUAL_COUNTER') {
+      return { accepted: false, attributed: false, outcomeStatus: 'SOURCE_DISABLED' };
+    }
     // Tier 1: Check fingerprint for deduplication
     const existing = this.obsRepo.findByFingerprint(normalizedObs.fingerprintHash);
     if (existing) {

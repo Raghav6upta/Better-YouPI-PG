@@ -6,6 +6,7 @@ import { HttpServer } from '../server.js';
 import { ObservationNormalizer, BankSmsParser, BankEmailParser, generateQrSvg } from '@youpi/core';
 import { toRupeesString, toPaise, verifyHmac, resolveRuntimeUrls, resolveSecret, safeEqual, hasBearer, getObserverToken } from '@youpi/common';
 import { isAdminRequest } from '../auth-guard.js';
+import { normalizeAmazonPayReceipt } from '@youpi/core';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -67,6 +68,22 @@ export function registerPollerRoutes(server, ctx) {
   // POST /api/v1/pollers/events (Universal Observation Ingest for Gmail / SMS 2-Layer Observers)
   server.post('/api/v1/pollers/events', async (req, res) => {
     const body = await HttpServer.parseBody(req);
+
+    if (process.env.AMAZON_PAY_ENABLED === 'true' && body.source !== 'AMAZON_PAY') {
+      HttpServer.json(res, 409, { accepted: false, error: 'Only Amazon Pay observations are enabled.' });
+      return;
+    }
+    if (body.source === 'AMAZON_PAY') {
+      try {
+        const account = ctx.accountRepo.findById(body.receivingAccountId);
+        const observation = normalizeAmazonPayReceipt(body.receiptText, account);
+        const attribution = ctx.attributionEngine.processObservation(observation);
+        HttpServer.json(res, 200, { accepted: true, observationId: attribution.observationId, attribution });
+      } catch (error) {
+        HttpServer.json(res, 400, { accepted: false, error: error.message });
+      }
+      return;
+    }
 
     if (!body.receivingAccountId || !body.source) {
       HttpServer.json(res, 400, { error: 'Missing required fields: receivingAccountId and source.' });

@@ -29,6 +29,7 @@ export class PaymentObserverClient {
     const url = `${this.apiBaseUrl}/api/v1/pollers/events`;
     const payload = {
       source: this.sourceName,
+      receiptText: data.receiptText,
       receivingAccountId: data.receivingAccountId,
       amountPaise: data.amountPaise !== undefined ? data.amountPaise.toString() : undefined,
       amount: data.amount,
@@ -43,6 +44,7 @@ export class PaymentObserverClient {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getObserverToken()}` },
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify(payload)
     });
 

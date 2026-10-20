@@ -2,10 +2,14 @@ import { spawnSync } from 'node:child_process';
 
 const testFiles = [
   'packages/common/src/__tests__/common.test.js',
+  'packages/common/src/__tests__/whatsapp-logging.test.js',
   'packages/db/src/__tests__/customer-reset.test.js',
   'packages/db/src/__tests__/auth-matrix.test.js',
   'packages/db/src/__tests__/db.test.js',
   'packages/core/src/__tests__/core.test.js',
+  'packages/core/src/__tests__/amazon-pay.test.js',
+  'apps/amazon-pay-observer/src/__tests__/observer.test.js',
+  'apps/payment-api/src/__tests__/amazon-pay-admin.test.js',
   'packages/core/src/__tests__/queue-timing.test.js',
   'packages/core/src/__tests__/webhook-engine.test.js',
   'packages/merchant-sdk/src/__tests__/merchant-sdk.test.js',

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { generateHmac, toRupeesString, validateOutboundWebhookUrl } from '@youpi/common';
 import { isTerminalStatus, toPublicOutcome } from './state-machine.js';
+import { PaymentSessionRepository } from '@youpi/db';
 
 export class WebhookEngine {
   /**
@@ -22,7 +23,11 @@ export class WebhookEngine {
    * @param {any} session The payment session entity
    * @returns {Promise<{ delivered: boolean, deliveryId: string, status?: number, error?: string }>}
    */
-  async dispatch(event, session) {
+  async dispatch(event, session, options = {}) {
+    if (options.deliveryId) {
+      const existing = this.db.queryOne('SELECT * FROM webhook_deliveries WHERE id = ?', [options.deliveryId]);
+      if (existing) return { delivered: Boolean(existing.is_successful), deliveryId: existing.id, status: existing.response_status };
+    }
     const merchant = this.merchantRepo.findById(session.merchantId);
     if (!merchant || !merchant.webhookUrl) {
       return { delivered: false, deliveryId: '', error: 'No webhook URL configured for merchant.' };
@@ -45,13 +50,16 @@ export class WebhookEngine {
       amountPaise: Number(session.amountPaise),
       currency: session.currency || 'INR',
       method: session.method || 'UPI',
+      utr: session.attributedObservationId
+        ? this.db.queryOne('SELECT bank_reference_number FROM payment_observations WHERE id = ?', [session.attributedObservationId])?.bank_reference_number || null
+        : null,
       completedAt: session.completedAt ? session.completedAt.toISOString() : new Date().toISOString(),
       metadata: session.metadata || {}
     };
 
     const payloadString = JSON.stringify(payloadObj);
     const signature = generateHmac(payloadString, merchant.webhookSecret);
-    const deliveryId = crypto.randomUUID();
+    const deliveryId = options.deliveryId || crypto.randomUUID();
     const timestamp = Date.now().toString();
 
     const headers = {
@@ -65,6 +73,14 @@ export class WebhookEngine {
     let responseStatus = null;
     let responseBody = null;
     let isSuccessful = false;
+
+    // Persist before network I/O so restart recovery can retry unacknowledged deliveries.
+    this.db.execute(`INSERT INTO webhook_deliveries (
+      id, merchant_id, payment_id, event_type, payload, endpoint_url,
+      attempt_count, is_successful, next_retry_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`, [deliveryId, merchant.id, session.id,
+      publicOutcome, payloadString, endpointCheck.url.toString(),
+      new Date(Date.now() + 30_000).toISOString(), new Date().toISOString()]);
 
     try {
       const res = await fetch(endpointCheck.url.toString(), {
@@ -84,29 +100,13 @@ export class WebhookEngine {
     }
 
     // Persist delivery record in webhook_deliveries
-    const nowIso = new Date().toISOString();
     const nextRetryAt = isSuccessful
       ? null
       : new Date(Date.now() + 5000).toISOString(); // initial 5s backoff
 
-    this.db.execute(`
-      INSERT INTO webhook_deliveries (
-        id, merchant_id, payment_id, event_type, payload, endpoint_url,
-        response_status, response_body, attempt_count, is_successful, next_retry_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-    `, [
-      deliveryId,
-      merchant.id,
-      session.id,
-      publicOutcome,
-      payloadString,
-      merchant.webhookUrl,
-      responseStatus,
-      responseBody,
-      isSuccessful ? 1 : 0,
-      nextRetryAt,
-      nowIso
-    ]);
+    this.db.execute(`UPDATE webhook_deliveries SET response_status = ?, response_body = ?,
+      attempt_count = 1, is_successful = ?, next_retry_at = ? WHERE id = ?`,
+      [responseStatus, responseBody, isSuccessful ? 1 : 0, nextRetryAt, deliveryId]);
 
     return {
       delivered: isSuccessful,
@@ -114,6 +114,22 @@ export class WebhookEngine {
       status: responseStatus,
       error: isSuccessful ? undefined : responseBody
     };
+  }
+
+  async flushPendingEvents() {
+    if (this.flushingEvents) return this.flushingEvents;
+    this.flushingEvents = (async () => {
+      const events = this.db.query('SELECT * FROM payment_event_outbox WHERE dispatched_at IS NULL ORDER BY created_at LIMIT 20');
+      const sessions = new PaymentSessionRepository(this.db);
+      for (const event of events) {
+        const session = sessions.findById(event.payment_id);
+        if (!session) continue;
+        const result = await this.dispatch(event.event_type, session, { deliveryId: event.id });
+        if (result.deliveryId) this.db.execute('UPDATE payment_event_outbox SET dispatched_at = ? WHERE id = ?',
+          [new Date().toISOString(), event.id]);
+      }
+    })().finally(() => { this.flushingEvents = null; });
+    return this.flushingEvents;
   }
 
   /**
