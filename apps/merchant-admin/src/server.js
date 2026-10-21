@@ -162,9 +162,8 @@ export class AdminServer {
           path: req.url,
           method: req.method,
           headers: {
-            ...req.headers,
+            ...sanitizedForwardHeaders(req, `localhost:${targetPort}`),
             'x-merchant-id': req.headers['x-merchant-id'] || defaultMerchantId,
-            host: `localhost:${targetPort}`,
             'x-forwarded-host': req.headers.host || '',
             'x-forwarded-proto': req.headers['x-forwarded-proto'] || 'http'
           }
@@ -208,6 +207,21 @@ export class AdminServer {
           });
           const stream = fs.createReadStream(apkPath);
           stream.pipe(res);
+          return;
+        }
+      }
+
+      // Self-hosted UI fonts (CSP blocks third-party font CDNs)
+      const fontMatch = /^\/fonts\/(dm-sans|sora)\.woff2$/.exec(pathname);
+      if (fontMatch && req.method === 'GET') {
+        const fontPath = path.resolve(__dirname, '../public/fonts', `${fontMatch[1]}.woff2`);
+        if (fs.existsSync(fontPath)) {
+          res.writeHead(200, {
+            'Content-Type': 'font/woff2',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'X-Content-Type-Options': 'nosniff'
+          });
+          fs.createReadStream(fontPath).pipe(res);
           return;
         }
       }

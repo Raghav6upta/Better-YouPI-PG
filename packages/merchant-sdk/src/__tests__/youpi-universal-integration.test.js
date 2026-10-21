@@ -1,8 +1,17 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { Database } from '@youpi/db';
 import { startServer as startPaymentApi } from '../../../../apps/payment-api/src/index.js';
 import { YoupiPaymentClient, YoupiCheckout, Youpi } from '../index.js';
+
+test('browser-served SDK copies include the same fixes as the packaged SDK', () => {
+  for (const filename of ['youpi.js', 'youpi-checkout.js']) {
+    const packaged = readFileSync(new URL(`../${filename}`, import.meta.url), 'utf8');
+    const served = readFileSync(new URL(`../../../../apps/checkout-portal/src/sdk/${filename}`, import.meta.url), 'utf8');
+    assert.equal(served.replace(/\r\n/g, '\n'), packaged.replace(/\r\n/g, '\n'), filename);
+  }
+});
 
 describe('Universal YOUPI PG One-Script Integration Tests', () => {
   let apiInstance;

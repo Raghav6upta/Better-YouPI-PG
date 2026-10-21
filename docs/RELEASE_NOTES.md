@@ -36,6 +36,16 @@ Hosted Windows and Linux CI passed for the published beta. Check [GitHub Actions
 This is an experimental beta, not production certification. See the same-amount attribution limitation in [Amazon architecture](AMAZON_PAY.md), dependency/session cautions in [security](../SECURITY.md), and the unresolved whole-project license in [licensing status](../LICENSING.md).
 # Upstream sync and mobile QR checkout
 
+## 22 October 2026 update
+
+- Merged upstream through `3a35c98`: device credential verification, separate signing/indexing keys, redirect and branding sanitization, payment-window validation, duplicate-reference safeguards, and the refreshed admin dashboard.
+- Preserved Amazon Pay receipt verification, its durable webhook outbox, WhatsApp OTP setup, and the mobile UPI button that uses the exact QR URI.
+- Kept a single webhook recovery sweep. Adapted upstream's retry test to wait for the persisted HTTP result, since this fork saves deliveries before sending them.
+- Synchronized the browser-served SDK with the package so relative storefront return URLs and explicit iframe origins work in both integrations.
+- Verified 44 regression suites, 22 Amazon tests, 17 WhatsApp tests, typecheck, and mobile/desktop browser checks. The dependency audit reported no production vulnerabilities. Browser checks verify the QR payload and protocol navigation request; opening a real phone payment app still requires a device acceptance test.
+
+## 21 October 2026 update
+
 - Synced upstream `youpi-pg/YouPI-PG` through `90eecd5` (21 October 2026), including payment-state hardening, verification rejection handling, shared QR generation, merchant iframe configuration and checkout partials.
 - Retained dashboard-managed Amazon Pay and WhatsApp OTP. The consolidated observer poller skips SMS/Gmail in Amazon mode, and the durable Amazon webhook outbox remains enabled.
 - Added a mobile button whose link is identical to the QR payload. Added checks for receiving UPI ID, amount, expiry, app return and stale state responses.

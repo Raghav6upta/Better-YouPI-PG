@@ -1,6 +1,6 @@
 import { HttpServer } from '../server.js';
 import { toPaise, toRupeesString, resolveRuntimeUrls, PaymentStatus, safeEqual } from '@youpi/common';
-import { isTerminalStatus, toPublicOutcome } from '@youpi/core';
+import { isTerminalStatus, toPublicOutcome, verifyRegisteredDeviceCredentials } from '@youpi/core';
 import { isPaymentOwner } from '../auth-guard.js';
 
 /**
@@ -58,17 +58,47 @@ export function registerPaymentRoutes(server, ctx) {
       return;
     }
 
+    // returnUrl is echoed back to the customer's browser as a redirect target after
+    // payment, so only absolute http(s) URLs are ever stored. This is the write-side
+    // complement to the checkout page's sanitizeRedirectUrl.
+    if (body.returnUrl !== undefined && body.returnUrl !== null && body.returnUrl !== '') {
+      if (typeof body.returnUrl !== 'string') {
+        HttpServer.json(res, 400, { error: 'returnUrl must be a string.' });
+        return;
+      }
+      let parsedReturnUrl;
+      try {
+        parsedReturnUrl = new URL(body.returnUrl.trim());
+      } catch {
+        HttpServer.json(res, 400, { error: 'returnUrl must be an absolute http(s) URL.' });
+        return;
+      }
+      if (parsedReturnUrl.protocol !== 'http:' && parsedReturnUrl.protocol !== 'https:') {
+        HttpServer.json(res, 400, { error: 'returnUrl must use the http or https scheme.' });
+        return;
+      }
+      body.returnUrl = parsedReturnUrl.href;
+    }
+
     const deviceId = body.deviceId || req.headers['x-device-id'] || null;
-    if (deviceId && ctx.deviceRepo) {
-      let dev = ctx.deviceRepo.findById(deviceId);
-      if (!dev) {
-        try {
-          ctx.deviceRepo.create({
-            id: deviceId,
-            publicKey: `adhoc_${deviceId}`,
-            fingerprintHash: `fp_${deviceId}`
-          });
-        } catch {}
+    const deviceToken = body.deviceToken || req.headers['x-device-token'] || null;
+    const deviceSignature = body.deviceSignature || req.headers['x-device-signature'] || null;
+    const signaturePayload = body.signaturePayload || req.headers['x-device-payload'] || null;
+
+    if (deviceId) {
+      const credCheck = verifyRegisteredDeviceCredentials({
+        deviceId,
+        deviceToken,
+        deviceSignature,
+        signaturePayload,
+        deviceRepo: ctx.deviceRepo
+      });
+      if (!credCheck.valid) {
+        HttpServer.json(res, 401, {
+          error: credCheck.error || 'DEVICE_CREDENTIALS_INVALID',
+          message: credCheck.message || 'A registered device and valid device credential are required.'
+        });
+        return;
       }
     }
 
@@ -112,8 +142,8 @@ export function registerPaymentRoutes(server, ctx) {
 
       // If existing is non-terminal (ACTIVE, PROCESSING, QUEUED, INITIATED):
       if ([PaymentStatus.ACTIVE, PaymentStatus.PROCESSING, PaymentStatus.QUEUED, PaymentStatus.INITIATED].includes(existing.status)) {
-        // CASE 3: Active session + Different device -> DUPLICATE_SESSION_DETECTED
-        if (deviceId && existing.deviceId && deviceId !== existing.deviceId) {
+        // CASE 3: Active session bound to a device + missing or different device -> DUPLICATE_SESSION_DETECTED
+        if (existing.deviceId && (!deviceId || deviceId !== existing.deviceId)) {
           HttpServer.json(res, 409, {
             error: 'DUPLICATE_SESSION_DETECTED',
             code: 'DEVICE_SESSION_MISMATCH',
@@ -201,7 +231,7 @@ export function registerPaymentRoutes(server, ctx) {
     if (customerId && ctx.sessionRepo) {
       const activeForCust = ctx.sessionRepo.findActiveForCustomer ? ctx.sessionRepo.findActiveForCustomer(customerId) : null;
       if (activeForCust) {
-        if (deviceId && activeForCust.deviceId && deviceId !== activeForCust.deviceId) {
+        if (activeForCust.deviceId && (!deviceId || deviceId !== activeForCust.deviceId)) {
           HttpServer.json(res, 409, {
             error: 'DUPLICATE_SESSION_DETECTED',
             code: 'DEVICE_SESSION_MISMATCH',
