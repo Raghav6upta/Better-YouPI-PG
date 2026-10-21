@@ -5,8 +5,10 @@ import {
   assertValidTransition,
   toPublicOutcome,
   ObservationNormalizer,
-  AttributionEngine
+  AttributionEngine,
+  BankSmsParser
 } from '../index.js';
+import { extractIntelligentAmount } from '../bank-sms-parser.js';
 import {
   PaymentStatus,
   PublicPaymentOutcome,
@@ -33,14 +35,20 @@ describe('@youpi/core Unit & Integration Tests', () => {
       assert.equal(isValidTransition(PaymentStatus.ACTIVE, PaymentStatus.EXPIRED), true);
       assert.equal(isValidTransition(PaymentStatus.ACTIVE, PaymentStatus.CANCELLED), true);
 
+      // Cash-on-Delivery: placing the order terminates the session as SUCCESS even before
+      // a UPI slot is acquired (INITIATED/QUEUED) or while it is held (ACTIVE).
+      assert.equal(isValidTransition(PaymentStatus.INITIATED, PaymentStatus.SUCCESS), true);
+      assert.equal(isValidTransition(PaymentStatus.QUEUED, PaymentStatus.SUCCESS), true);
+
       // Illegal transitions
-      assert.equal(isValidTransition(PaymentStatus.INITIATED, PaymentStatus.SUCCESS), false);
       assert.equal(isValidTransition(PaymentStatus.QUEUED, PaymentStatus.PROCESSING), false);
       assert.equal(isValidTransition(PaymentStatus.EXPIRED, PaymentStatus.SUCCESS), false);
       assert.equal(isValidTransition(PaymentStatus.SUCCESS, PaymentStatus.FAILED), false);
+      assert.equal(isValidTransition(PaymentStatus.SUCCESS, PaymentStatus.ACTIVE), false);
+      assert.equal(isValidTransition(PaymentStatus.PROCESSING, PaymentStatus.ACTIVE), false);
 
       assert.throws(
-        () => assertValidTransition(PaymentStatus.INITIATED, PaymentStatus.SUCCESS),
+        () => assertValidTransition(PaymentStatus.SUCCESS, PaymentStatus.ACTIVE),
         /Illegal payment state transition/
       );
     });
@@ -288,6 +296,387 @@ describe('@youpi/core Unit & Integration Tests', () => {
       const tickets = ticketRepo.findTicketsByCustomer(customerA.id);
       assert.equal(tickets.length, 1);
       assert.ok(tickets[0].subject.includes('LATE PAYMENT DETECTED'));
+    });
+  });
+
+
+
+describe('Bank SMS Parser UTR & Amount Extraction', () => {
+    test('does not extract English words as UTR when ref prefix is absent', () => {
+      const sms = {
+        text: 'Dear Customer, your ac no. XXXXX12345 has been credited with Rs 500.00 on 18-Oct-26.'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.ok(parsed);
+      assert.equal(parsed.amount, '500.00');
+      assert.equal(parsed.amountPaise, 50000n);
+      assert.notEqual(parsed.bankReferenceNumber, 'Customer');
+      assert.equal(parsed.bankReferenceNumber, undefined);
+    });
+
+    test('extracts valid UTR from explicit ref no prefix', () => {
+      const sms = {
+        text: 'A/C 1234 credited by Rs. 499.00 on 18-10-26. UPI Ref no 429182736451 from rahul@upi.'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.ok(parsed);
+      assert.equal(parsed.amount, '499.00');
+      assert.equal(parsed.amountPaise, 49900n);
+      assert.equal(parsed.bankReferenceNumber, '429182736451');
+      assert.equal(parsed.senderVpa, 'rahul@upi');
+    });
+
+    test('extracts standalone 12-digit UTR', () => {
+      const sms = {
+        text: 'Rs 1200.00 received in your account via UPI 987654321012 on 18/10.'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.ok(parsed);
+      assert.equal(parsed.amount, '1200.00');
+      assert.equal(parsed.bankReferenceNumber, '987654321012');
+    });
+
+    test('ignores available balance amount appearing before credit amount', () => {
+      const sms = {
+        text: 'Avl Bal Rs 15,000.00. Rs 500.00 credited to A/c XX1234 for UPI txn Ref 123456789012.'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.ok(parsed);
+      assert.equal(parsed.amount, '500.00');
+      assert.equal(parsed.amountPaise, 50000n);
+      assert.equal(parsed.bankReferenceNumber, '123456789012');
+    });
+
+    test('rejects debit notification even if credited disclaimer appears later', () => {
+      const sms = {
+        text: 'Dear Customer, A/c *1234 is debited for Rs 750 on 19-Oct-26. If not done by you, contact bank. Amount will be credited back in 48 hours.'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.equal(parsed, null);
+    });
+
+    test('amount extraction is not vulnerable to quadratic backtracking (ReDoS)', () => {
+      // The credit patterns chain several whitespace-matching quantifiers. A body such as
+      // "credited" followed by a long whitespace run used to take seconds to scan and blocked
+      // the payment event loop, so the text is whitespace-collapsed before matching.
+      const hostile = 'credited' + ' '.repeat(20000);
+      const started = Date.now();
+      extractIntelligentAmount(hostile);
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 500, `amount extraction took ${elapsed}ms on a whitespace flood`);
+    });
+
+    test('rejects bare payment or transfer debit message without credit indicator', () => {
+      const sms = {
+        text: 'Payment of Rs 350.00 sent to merchant@upi on 19-Oct. UPI Ref 998877665544.'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.equal(parsed, null);
+    });
+
+    test('Issue #20: correctly parses FamPay / FamApp credit notification with wallet, transaction ID, and UPI ID', () => {
+      const sms = {
+        text: 'Money received! Rs. 350.00 credited to FamPay Wallet via UPI from Gaurav (UPI ID: gaurav@fam). Transaction ID: 418293847562'
+      };
+      const parsed = BankSmsParser.parse(sms);
+      assert.ok(parsed);
+      assert.equal(parsed.amount, '350.00');
+      assert.equal(parsed.amountPaise, 35000n);
+      assert.equal(parsed.bankReferenceNumber, '418293847562');
+      assert.equal(parsed.senderVpa, 'gaurav@fam');
+    });
+
+    test('Issue #20: normalizes FamPay observation with added to account format', () => {
+      const obs = ObservationNormalizer.normalize({
+        source: ObserverSource.GOOGLE_MESSAGES,
+        receivingAccountId: 'acc_1',
+        rawPayload: {
+          text: 'Payment received! Rs. 500.00 added to your account via UPI from user@idfcbank. UPI Ref: 328910293841'
+        }
+      });
+      assert.equal(obs.amountPaise, 50000n);
+      assert.equal(obs.bankReferenceNumber, '328910293841');
+      assert.equal(obs.senderVpa, 'user@idfcbank');
+    });
+  });
+
+describe('Issue #4: Terminal State Invariants and Re-activation Guards', () => {
+    let db;
+    let sessionRepo;
+    let obsRepo;
+    let ticketRepo;
+    let auditRepo;
+    let customerRepo;
+    let defaultMerchant;
+    let receivingAccount;
+    let attributionEngine;
+    let emittedEvents;
+
+    beforeEach(() => {
+      db = new Database({ inMemory: true });
+      const seed = runMigrations(db);
+      defaultMerchant = seed.defaultMerchant;
+      receivingAccount = { id: '00000000-0000-0000-0000-000000000002' };
+
+      sessionRepo = new PaymentSessionRepository(db);
+      obsRepo = new ObservationRepository(db);
+      ticketRepo = new SupportTicketRepository(db);
+      auditRepo = new AuditLogRepository(db);
+      customerRepo = new CustomerRepository(db);
+
+      emittedEvents = [];
+      attributionEngine = new AttributionEngine({
+        sessionRepo,
+        obsRepo,
+        ticketRepo,
+        auditRepo,
+        eventEmitter: {
+          emit: (event, payload) => emittedEvents.push({ event, payload })
+        }
+      });
+    });
+
+    afterEach(() => {
+      db.close();
+    });
+    test('strictly forbids all transitions out of terminal states in the state machine', () => {
+      const terminalStates = [
+        PaymentStatus.SUCCESS,
+        PaymentStatus.FAILED,
+        PaymentStatus.EXPIRED,
+        PaymentStatus.CANCELLED
+      ];
+
+      const allStates = [
+        PaymentStatus.INITIATED,
+        PaymentStatus.QUEUED,
+        PaymentStatus.ACTIVE,
+        PaymentStatus.PROCESSING,
+        PaymentStatus.SUCCESS,
+        PaymentStatus.FAILED,
+        PaymentStatus.EXPIRED,
+        PaymentStatus.CANCELLED
+      ];
+
+      for (const terminal of terminalStates) {
+        for (const target of allStates) {
+          assert.equal(
+            isValidTransition(terminal, target),
+            false,
+            `Expected isValidTransition('${terminal}', '${target}') to be false`
+          );
+          assert.throws(
+            () => assertValidTransition(terminal, target),
+            /Illegal payment state transition/
+          );
+        }
+      }
+    });
+
+    test('acquireSlotAtomic rejects sessions in terminal status', () => {
+      const testCases = [
+        PaymentStatus.SUCCESS,
+        PaymentStatus.FAILED,
+        PaymentStatus.EXPIRED,
+        PaymentStatus.CANCELLED
+      ];
+
+      for (const status of testCases) {
+        const session = sessionRepo.create({
+          merchantId: defaultMerchant.id,
+          receivingAccountId: receivingAccount.id,
+          orderId: `ORD-TERMINAL-${status}`,
+          amountPaise: 50000n
+        });
+
+        if (status === PaymentStatus.CANCELLED) {
+          sessionRepo.transitionToTerminal(session.id, PaymentStatus.CANCELLED);
+        } else {
+          sessionRepo.acquireSlotAtomic(session.id, receivingAccount.id);
+          sessionRepo.transitionToTerminal(session.id, status);
+        }
+
+        const terminalSession = sessionRepo.findById(session.id);
+        assert.equal(terminalSession.status, status);
+
+        assert.throws(
+          () => sessionRepo.acquireSlotAtomic(session.id, receivingAccount.id),
+          /Cannot acquire slot for session in terminal status|Illegal payment state transition/
+        );
+
+        // Status must remain terminal in database
+        const afterAttempt = sessionRepo.findById(session.id);
+        assert.equal(afterAttempt.status, status);
+      }
+    });
+
+    test('recordVerificationSource ignores terminal non-success sessions and preserves terminal status', () => {
+      const terminalStatuses = [
+        PaymentStatus.FAILED,
+        PaymentStatus.EXPIRED,
+        PaymentStatus.CANCELLED
+      ];
+
+      for (const status of terminalStatuses) {
+        const session = sessionRepo.create({
+          merchantId: defaultMerchant.id,
+          receivingAccountId: receivingAccount.id,
+          orderId: `ORD-VERIFY-${status}`,
+          amountPaise: 40000n
+        });
+        if (status === PaymentStatus.CANCELLED) {
+          sessionRepo.transitionToTerminal(session.id, PaymentStatus.CANCELLED);
+        } else {
+          sessionRepo.acquireSlotAtomic(session.id, receivingAccount.id);
+          sessionRepo.transitionToTerminal(session.id, status);
+        }
+
+        const res = sessionRepo.recordVerificationSource(session.id, ObserverSource.GMAIL, 'obs_fake_123', { finalizeSuccess: true });
+        assert.equal(res.isFirstSuccess, false);
+
+        // Status in database must still be the terminal status
+        const unchanged = sessionRepo.findById(session.id);
+        assert.equal(unchanged.status, status);
+      }
+    });
+
+    test('transitionToProcessing rejects terminal sessions and non-active sessions', () => {
+      // 1. INITIATED session rejects transition to PROCESSING
+      const initiated = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-PROC-INITIATED',
+        amountPaise: 15000n
+      });
+      assert.throws(
+        () => sessionRepo.transitionToProcessing(initiated.id),
+        /Cannot transition to PROCESSING from status|Illegal payment state transition/
+      );
+
+      // 2. QUEUED session rejects transition to PROCESSING
+      const activeSess = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-PROC-ACTIVE',
+        amountPaise: 15000n
+      });
+      sessionRepo.acquireSlotAtomic(activeSess.id, receivingAccount.id);
+
+      const queuedSess = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-PROC-QUEUED',
+        amountPaise: 15000n
+      });
+      sessionRepo.acquireSlotAtomic(queuedSess.id, receivingAccount.id);
+      assert.equal(sessionRepo.findById(queuedSess.id).status, PaymentStatus.QUEUED);
+
+      assert.throws(
+        () => sessionRepo.transitionToProcessing(queuedSess.id),
+        /Cannot transition to PROCESSING from status|Illegal payment state transition/
+      );
+
+      // 3. SUCCESS session rejects transition to PROCESSING
+      sessionRepo.transitionToTerminal(activeSess.id, PaymentStatus.SUCCESS);
+      assert.throws(
+        () => sessionRepo.transitionToProcessing(activeSess.id),
+        /Cannot transition to PROCESSING from status|Illegal payment state transition/
+      );
+
+      // 4. CANCELLED session rejects transition to PROCESSING
+      const cancelled = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-PROC-CANCELLED',
+        amountPaise: 15000n
+      });
+      sessionRepo.transitionToTerminal(cancelled.id, PaymentStatus.CANCELLED);
+      assert.throws(
+        () => sessionRepo.transitionToProcessing(cancelled.id),
+        /Cannot transition to PROCESSING from status|Illegal payment state transition/
+      );
+
+      // 5. EXPIRED session rejects transition to PROCESSING
+      const expired = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-PROC-EXPIRED',
+        amountPaise: 15000n
+      });
+      sessionRepo.acquireSlotAtomic(expired.id, receivingAccount.id);
+      sessionRepo.transitionToTerminal(expired.id, PaymentStatus.EXPIRED);
+      assert.throws(
+        () => sessionRepo.transitionToProcessing(expired.id),
+        /Cannot transition to PROCESSING from status|Illegal payment state transition/
+      );
+
+      // 6. FAILED session rejects transition to PROCESSING
+      const failed = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-PROC-FAILED',
+        amountPaise: 15000n
+      });
+      sessionRepo.acquireSlotAtomic(failed.id, receivingAccount.id);
+      sessionRepo.transitionToTerminal(failed.id, PaymentStatus.FAILED);
+      assert.throws(
+        () => sessionRepo.transitionToProcessing(failed.id),
+        /Cannot transition to PROCESSING from status|Illegal payment state transition/
+      );
+    });
+
+
+    test('AttributionEngine does not revive expired session to SUCCESS and creates support ticket', () => {
+      const customer = customerRepo.create({
+        merchantId: defaultMerchant.id,
+        phoneNumber: '9123456780',
+        fullName: 'Late Paying User',
+        password: 'Password9!'
+      });
+
+      const expiredSession = sessionRepo.create({
+        merchantId: defaultMerchant.id,
+        customerId: customer.id,
+        receivingAccountId: receivingAccount.id,
+        orderId: 'ORD-LATE-RECONCILE',
+        amountPaise: 75000n
+      });
+
+      sessionRepo.acquireSlotAtomic(expiredSession.id, receivingAccount.id);
+      sessionRepo.transitionToTerminal(expiredSession.id, PaymentStatus.EXPIRED);
+
+      const lateObs = ObservationNormalizer.normalize({
+        source: ObserverSource.GMAIL,
+        receivingAccountId: receivingAccount.id,
+        amountPaise: 75000n,
+        bankReferenceNumber: 'UTR-LATE-999',
+        observedAt: new Date(),
+        rawPayload: { text: 'Bank alert Rs 750' }
+      });
+
+      const result = attributionEngine.processObservation(lateObs);
+
+      assert.equal(result.attributed, false);
+      assert.equal(result.lateMatch, true);
+      assert.equal(result.paymentSessionId, expiredSession.id);
+      assert.equal(result.outcomeStatus, ObservationAttributionStatus.LATE_UNMATCHED);
+
+      // Verify the session status in DB is STILL EXPIRED (not SUCCESS)
+      const freshSession = sessionRepo.findById(expiredSession.id);
+      assert.equal(freshSession.status, PaymentStatus.EXPIRED);
+
+      // Verify support ticket was created
+      const tickets = ticketRepo.findTicketsByCustomer(customer.id);
+      assert.ok(tickets.length >= 1);
+      const ticket = tickets.find(t => t.paymentId === expiredSession.id);
+      assert.ok(ticket);
+      assert.ok(ticket.subject.includes('[LATE PAYMENT DETECTED]'));
+
+      // Verify PAYMENT.LATE_DETECTED was emitted and not PAYMENT.SUCCESS
+      const lateEvents = emittedEvents.filter(e => e.event === 'PAYMENT.LATE_DETECTED' && e.payload.paymentId === expiredSession.id);
+      assert.equal(lateEvents.length, 1);
+      const successEvents = emittedEvents.filter(e => e.event === 'PAYMENT.SUCCESS' && e.payload.paymentId === expiredSession.id);
+      assert.equal(successEvents.length, 0);
     });
   });
 });

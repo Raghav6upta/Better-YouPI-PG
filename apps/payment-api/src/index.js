@@ -3,7 +3,6 @@ import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PaymentStatus } from '@youpi/common';
-import { getObserverToken, getAmazonPayConfig } from '@youpi/common';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,6 +50,7 @@ import { AmazonPayService } from './services/amazon-pay.service.js';
 import { registerCustomerRoutes } from './routes/customer.routes.js';
 import { registerDeviceRoutes } from './routes/device.routes.js';
 import { getWhatsAppBerryService, WhatsAppBerryService } from './services/whatsapp-berry.service.js';
+import { ObserverPollerService } from './services/observer-poller.service.js';
 
 export function createPaymentApp(customDb = null, options = {}) {
   const db = customDb || getDatabase();
@@ -106,7 +106,8 @@ export function createPaymentApp(customDb = null, options = {}) {
     accountRepo,
     queueEngine,
     timingEngine,
-    auditRepo
+    auditRepo,
+    eventEmitter
   });
 
   const webhookEngine = new WebhookEngine({
@@ -233,83 +234,6 @@ export function createPaymentApp(customDb = null, options = {}) {
     }
   });
 
-  // Active 30-Second Verification Polling Orchestrator (Triple Verification Standard):
-  // Concurrently sweeps Gmail, Google Messages SMS, and Android Observer every 1.5s
-  // Continues polling for remaining sources until Level 3 (Triple Verification) is reached or 30s window finishes!
-  const activeSweepTimers = new Set();
-
-  let amazonSweepPending = false;
-  function sweepAmazon() {
-    if (amazonSweepPending) return;
-    amazonSweepPending = true;
-    fetch(`http://127.0.0.1:${Number(process.env.AMAZON_PAY_OBSERVER_PORT || 6004)}/api/sweep`, {
-      method: 'POST', headers: { Authorization: `Bearer ${getObserverToken()}` }, signal: AbortSignal.timeout(1500)
-    }).catch(() => {}).finally(() => { amazonSweepPending = false; });
-  }
-  eventEmitter.on('SESSION.ACTIVATED', () => { if (getAmazonPayConfig().enabled) sweepAmazon(); });
-
-  eventEmitter.on('SESSION.PROCESSING', (data) => {
-    if (getAmazonPayConfig().enabled) { sweepAmazon(); return; }
-    const sessionId = data.sessionId;
-    let sweepCount = 0;
-    const maxSweeps = 20; // 20 sweeps * 1.5s = 30 seconds
-
-    const sweepTimer = setInterval(async () => {
-      try {
-        sweepCount++;
-        const current = sessionRepo.findById(sessionId);
-
-        // Stop polling if session is terminal failed/expired/cancelled, or reached full Triple Verification (level >= 3), or exceeded 30s
-        const isCompleteOrCancelled = !current ||
-          current.status === PaymentStatus.FAILED ||
-          current.status === PaymentStatus.EXPIRED ||
-          current.status === PaymentStatus.CANCELLED ||
-          (current.verificationLevel >= 3) ||
-          sweepCount >= maxSweeps;
-
-        if (isCompleteOrCancelled) {
-          clearInterval(sweepTimer);
-          activeSweepTimers.delete(sweepTimer);
-          return;
-        }
-
-        // Sweep 1: Google Messages Web SMS
-        try {
-          const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-          fetch(`http://localhost:${smsPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
-        } catch {}
-
-        // Sweep 2: Gmail Inbox
-        try {
-          const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-          fetch(`http://localhost:${gmailPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(1200) }).catch(() => {});
-        } catch {}
-
-        // Sweep 3: Check pending/unattributed Android push notifications in DB
-        try {
-          const unattributed = obsRepo.findUnattributed(current.receivingAccountId);
-          for (const obs of unattributed) {
-            attributionEngine.processObservation({
-              source: obs.source,
-              receivingAccountId: obs.receivingAccountId,
-              amountPaise: obs.amountPaise,
-              observedAt: obs.observedAt,
-              bankReferenceNumber: obs.bankReferenceNumber,
-              senderVpa: obs.senderVpa,
-              rawPayload: obs.rawPayload,
-              fingerprintHash: obs.fingerprintHash
-            });
-          }
-        } catch {}
-      } catch {
-        clearInterval(sweepTimer);
-        activeSweepTimers.delete(sweepTimer);
-      }
-    }, 1500);
-
-    if (sweepTimer.unref) sweepTimer.unref();
-    activeSweepTimers.add(sweepTimer);
-  });
 
   // Continuous 1-second background queue sync and auto-expiry daemon
   const queueSyncDaemon = setInterval(() => {
@@ -318,25 +242,35 @@ export function createPaymentApp(customDb = null, options = {}) {
 
       // Sweep expired ACTIVE sessions
       const expiredActive = db.query(`
-        SELECT id, receiving_account_id FROM payment_sessions
+        SELECT id, merchant_id, order_id, receiving_account_id FROM payment_sessions
         WHERE status = 'ACTIVE' AND expires_at <= ?
       `, [nowIso]);
 
       for (const row of expiredActive) {
         sessionRepo.transitionToTerminal(row.id, PaymentStatus.EXPIRED);
         server.broadcastSse(row.id, 'status_change', { status: PaymentStatus.EXPIRED });
+        eventEmitter.emit('PAYMENT.EXPIRED', {
+          paymentId: row.id,
+          orderId: row.order_id,
+          merchantId: row.merchant_id
+        });
         handleSlotFreedAndPromote(row.receiving_account_id);
       }
 
       // Sweep failed PROCESSING sessions
       const failedProc = db.query(`
-        SELECT id, receiving_account_id FROM payment_sessions
+        SELECT id, merchant_id, order_id, receiving_account_id FROM payment_sessions
         WHERE status = 'PROCESSING' AND processing_expires_at <= ?
       `, [nowIso]);
 
       for (const row of failedProc) {
         sessionRepo.transitionToTerminal(row.id, PaymentStatus.FAILED);
         server.broadcastSse(row.id, 'status_change', { status: PaymentStatus.FAILED });
+        eventEmitter.emit('PAYMENT.FAILED', {
+          paymentId: row.id,
+          orderId: row.order_id,
+          merchantId: row.merchant_id
+        });
         handleSlotFreedAndPromote(row.receiving_account_id);
       }
 
@@ -354,57 +288,20 @@ export function createPaymentApp(customDb = null, options = {}) {
 
   if (queueSyncDaemon.unref) queueSyncDaemon.unref();
 
-  // Continuous 1-Second Aggressive Polling Daemon across SMS Gateway & Gmail Observers
-  const aggressivePollerDaemon = setInterval(async () => {
-    try {
-      if (getAmazonPayConfig().enabled) {
-        const active = db.queryOne("SELECT id FROM payment_sessions WHERE status IN ('ACTIVE', 'PROCESSING') AND method = 'UPI' LIMIT 1");
-        if (active) sweepAmazon();
-        return;
-      }
-      // Find all active/processing sessions currently waiting for bank confirmation
-      const activeSessions = db.query(`
-        SELECT id, receiving_account_id, amount_paise, status
-        FROM payment_sessions
-        WHERE status IN ('ACTIVE', 'PROCESSING') AND method = 'UPI'
-      `);
 
-      if (activeSessions.length === 0) return;
-
-      // 1. Poll SMS Observer
-      try {
-        const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-        fetch(`http://localhost:${smsPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(800) }).catch(() => {});
-      } catch {}
-
-      // 2. Poll Gmail Observer
-      try {
-        const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-        fetch(`http://localhost:${gmailPort}/api/sweep`, { method: 'POST', signal: AbortSignal.timeout(800) }).catch(() => {});
-      } catch {}
-
-      // 3. Sweep any pending unattributed observations in DB matching active sessions
-      for (const session of activeSessions) {
-        try {
-          const unattributed = obsRepo.findUnattributed(session.receiving_account_id);
-          for (const obs of unattributed) {
-            attributionEngine.processObservation({
-              source: obs.source,
-              receivingAccountId: obs.receivingAccountId,
-              amountPaise: obs.amountPaise,
-              observedAt: obs.observedAt,
-              bankReferenceNumber: obs.bankReferenceNumber,
-              senderVpa: obs.senderVpa,
-              rawPayload: obs.rawPayload,
-              fingerprintHash: obs.fingerprintHash
-            });
-          }
-        } catch {}
-      }
-    } catch {}
-  }, 1000);
-
-  if (aggressivePollerDaemon.unref) aggressivePollerDaemon.unref();
+  // Consolidated, Coordinated Observer Polling & Verification Daemon
+  // Eliminates duplicate HTTP sweeps, enforces 1.5s-2s cooldown, and prevents SQLite write contention
+  const observerPollerService = new ObserverPollerService({
+    db,
+    sessionRepo,
+    obsRepo,
+    attributionEngine,
+    eventEmitter,
+    pollIntervalMs: Number(process.env.OBSERVER_POLL_INTERVAL_MS || 1500),
+    minSweepCooldownMs: Number(process.env.OBSERVER_SWEEP_COOLDOWN_MS || 2000),
+    smsPort: Number(process.env.SMS_OBSERVER_PORT || 6002),
+    gmailPort: Number(process.env.GMAIL_OBSERVER_PORT || 6003)
+  });
 
   let deliveringWebhooks = false;
   const deliverPendingWebhooks = async () => {
@@ -414,7 +311,7 @@ export function createPaymentApp(customDb = null, options = {}) {
     catch (error) { console.error('[Webhook recovery]', error.message); }
     finally { deliveringWebhooks = false; }
   };
-  const webhookRetryTimer = setInterval(deliverPendingWebhooks, 5000);
+  const webhookRetryTimer = setInterval(deliverPendingWebhooks, Number(process.env.WEBHOOK_RETRY_INTERVAL_MS || 5000));
   webhookRetryTimer.unref?.();
 
   // Execute crash recovery on boot
@@ -464,7 +361,9 @@ export function createPaymentApp(customDb = null, options = {}) {
     defaultMerchant,
     checkoutBaseUrl,
     whatsappBerryService,
-    webhookEngine
+    webhookEngine,
+    observerPollerService,
+    otpCooldownMs: options.otpCooldownMs
   };
 
   registerPaymentRoutes(server, context);
@@ -484,14 +383,13 @@ export function createPaymentApp(customDb = null, options = {}) {
     const amazonClosed = amazonPayService.close();
     clearInterval(webhookRetryTimer);
     clearInterval(queueSyncDaemon);
-    clearInterval(aggressivePollerDaemon);
-    for (const timer of activeSweepTimers) {
-      clearInterval(timer);
-    }
-    activeSweepTimers.clear();
+    observerPollerService.destroy();
     timingEngine.destroy();
     if (typeof attributionEngine.destroy === 'function') {
       attributionEngine.destroy();
+    }
+    if (whatsappBerryService && typeof whatsappBerryService.disconnect === 'function') {
+      whatsappBerryService.disconnect({ cleanSession: false }).catch(() => {});
     }
     return amazonClosed;
   }

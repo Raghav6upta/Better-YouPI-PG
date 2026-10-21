@@ -24,6 +24,59 @@ function fixture() {
     config: { receivingAccountId: account.id, mode: 'observe', channel: 'msedge' } };
 }
 
+test('Amazon checkout state includes the configured receiver in its canonical UPI URI and preserves the snapshot', async t => {
+  const priorEnv = Object.fromEntries(['AMAZON_PAY_ENABLED', 'AMAZON_PAY_OBSERVER_PORT'].map(key => [key, process.env[key]]));
+  const f = fixture();
+  const app = createPaymentApp(f.db, { amazonPayService: f.service });
+  await new Promise(resolve => app.rawServer.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${app.rawServer.address().port}`;
+  t.after(async () => {
+    await app.destroy();
+    await new Promise(resolve => app.rawServer.close(resolve));
+    f.db.close();
+    for (const [key, value] of Object.entries(priorEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const post = (path, body) => authFetch(base + path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  const receiver = 'amazon-test.receiver@apl';
+  const settings = await post('/api/v1/admin/upi-settings', { upiId: receiver, payeeName: 'Fixture Amazon Store' });
+  assert.equal(settings.status, 200);
+  await f.service.save(f.config);
+  await f.service.execute('start');
+  process.env.AMAZON_PAY_ENABLED = 'true';
+  process.env.AMAZON_PAY_OBSERVER_PORT = String(f.service.server.address().port);
+
+  const created = await post('/api/v1/payments', { orderId: 'AMAZON-URI-FIXTURE', amount: '1.25', autoActivate: true });
+  assert.equal(created.status, 201);
+  const { paymentId } = await created.json();
+  const readState = async () => {
+    const response = await fetch(`${base}/api/v1/checkout/${paymentId}/state`);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const active = await readState();
+  assert.equal(active.status, 'ACTIVE');
+  assert.equal(active.payeeVpa, receiver);
+  const uri = new URL(active.upiUri);
+  assert.equal(uri.protocol, 'upi:');
+  assert.equal(uri.hostname, 'pay');
+  assert.equal(uri.searchParams.get('pa'), receiver);
+  assert.equal(uri.searchParams.get('pn'), 'Fixture Amazon Store');
+  assert.equal(uri.searchParams.get('am'), '1.25');
+  assert.equal(uri.searchParams.get('cu'), 'INR');
+  assert.equal(uri.searchParams.get('tn'), 'AMAZON-URI-FIXTURE');
+
+  // Bypass the normal busy-account update guard to verify the immutable checkout snapshot.
+  f.db.execute('UPDATE payment_receiving_accounts SET upi_id = ? WHERE id = ?', ['changed-after-start@apl', f.account.id]);
+  const unchanged = await readState();
+  assert.equal(unchanged.payeeVpa, receiver);
+  assert.equal(unchanged.upiUri, active.upiUri);
+});
+
 test('Amazon dashboard lifecycle persists config, releases login profile, and stops without fallback', async t => {
   const f = fixture();
   t.after(async () => { await f.service.close(); f.db.close(); });

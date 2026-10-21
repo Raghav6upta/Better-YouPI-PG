@@ -1,4 +1,4 @@
-import { PaymentStatus, ObservationAttributionStatus, TicketStatus, SenderType } from '@youpi/common';
+import { PaymentStatus, ObservationAttributionStatus, TicketStatus, SenderType, isTerminalStatus } from '@youpi/common';
 import { reconcileAmazonPay } from './amazon-pay.js';
 import { getAmazonPayConfig } from '@youpi/common';
 
@@ -19,8 +19,9 @@ export class AttributionEngine {
     this.auditRepo = options.auditRepo;
     this.eventEmitter = options.eventEmitter || { emit: () => {} };
     const isTestExecution = process.env.NODE_ENV === 'test' ||
-      (process.execArgv && process.execArgv.includes('--test')) ||
-      (process.argv && process.argv.some(a => typeof a === 'string' && a.includes('test')));
+      Boolean(process.env.NODE_TEST_CONTEXT) ||
+      (process.execArgv && process.execArgv.some(a => a.includes('test'))) ||
+      (process.argv && process.argv.some(a => a.includes('test')));
 
     this.gracePeriodMs = options.gracePeriodMs !== undefined
       ? options.gracePeriodMs
@@ -85,6 +86,55 @@ export class AttributionEngine {
       // If observation came from a NEW, DIFFERENT channel and payment was already attributed:
       // Upgrade verification tier to Level 2 (Dual Verification)!
       if (existing.attributedPaymentId) {
+        const targetSession = this.sessionRepo.findById(existing.attributedPaymentId);
+        if (targetSession && isTerminalStatus(targetSession.status) && targetSession.status !== PaymentStatus.SUCCESS) {
+          const savedObs = this.obsRepo.create(normalizedObs);
+          this.obsRepo.markLateUnmatched(savedObs.id);
+          if (this.auditRepo) {
+            this.auditRepo.log({
+              merchantId: targetSession.merchantId,
+              entityType: 'PAYMENT_SESSION',
+              entityId: targetSession.id,
+              action: 'LATE_OBSERVATION_DETECTED',
+              actorType: 'SYSTEM',
+              details: {
+                observationId: savedObs.id,
+                source: normalizedObs.source,
+                sessionStatus: targetSession.status
+              }
+            });
+          }
+          if (this.ticketRepo && targetSession.customerId) {
+            this.ticketRepo.createTicket({
+              merchantId: targetSession.merchantId,
+              customerId: targetSession.customerId,
+              paymentId: targetSession.id,
+              subject: `[LATE PAYMENT DETECTED] Order #${targetSession.orderId}`,
+              status: TicketStatus.OPEN,
+              initialMessage: {
+                senderType: SenderType.ADMIN,
+                senderId: targetSession.merchantId,
+                message: `A delayed payment observation of ${normalizedObs.amountPaise / 100n} INR was detected after session ${targetSession.id} ended with status ${targetSession.status}. Flagged for manual merchant reconciliation.`
+              }
+            });
+          }
+          this.eventEmitter.emit('PAYMENT.LATE_DETECTED', {
+            paymentId: targetSession.id,
+            orderId: targetSession.orderId,
+            merchantId: targetSession.merchantId,
+            amountPaise: normalizedObs.amountPaise,
+            observationId: savedObs.id
+          });
+          return {
+            attributed: false,
+            duplicate: false,
+            lateMatch: true,
+            paymentSessionId: targetSession.id,
+            observationId: savedObs.id,
+            outcomeStatus: ObservationAttributionStatus.LATE_UNMATCHED
+          };
+        }
+
         // Cancel pending 5-second grace timer if any
         const pendingTimer = this.pendingGraceTimers.get(existing.attributedPaymentId);
         if (pendingTimer) {
@@ -212,6 +262,69 @@ export class AttributionEngine {
         : new Date(currentSession.createdAt.getTime() - 300000);
 
       const isTimeValid = !isPriorExpiredSession && (normalizedObs.observedAt >= slotStart);
+
+      // Invariant Check 0a: Transaction Reference Already Used Check
+      let isUtrAlreadyUsed = false;
+      const trimmedUtr = normalizedObs.bankReferenceNumber ? String(normalizedObs.bankReferenceNumber).trim() : '';
+      if (trimmedUtr.length > 0) {
+        const priorUsedSession = this.sessionRepo.db.queryOne(`
+          SELECT ps.id, ps.order_id
+          FROM payment_sessions ps
+          JOIN payment_observations po ON (ps.attributed_observation_id = po.id OR po.attributed_payment_id = ps.id)
+          WHERE ps.status = 'SUCCESS'
+            AND ps.id != ?
+            AND po.bank_reference_number = ?
+          LIMIT 1
+        `, [currentSession.id, trimmedUtr]);
+
+        if (priorUsedSession) {
+          isUtrAlreadyUsed = true;
+          if (this.auditRepo) {
+            this.auditRepo.log({
+              merchantId: currentSession.merchantId,
+              entityType: 'PAYMENT_SESSION',
+              entityId: currentSession.id,
+              action: 'REUSED_UTR_REJECTED',
+              actorType: 'SYSTEM',
+              details: {
+                bankReferenceNumber: trimmedUtr,
+                consumedByOrderId: priorUsedSession.order_id,
+                consumedBySessionId: priorUsedSession.id
+              }
+            });
+          }
+        }
+      }
+
+      // Invariant Check 0b: Check if SMS is from personal numeric phone number (10-15 digits E.164, no letters)
+      let isPersonalSms = false;
+      const senderStr = (normalizedObs.rawPayload?.sender || normalizedObs.rawPayload?.from || '').toString().trim();
+      if ((normalizedObs.source === 'SMS' || normalizedObs.source === 'ANDROID_OBSERVER') && senderStr) {
+        const digitsOnly = senderStr.replace(/[\s+-]/g, '');
+        if (digitsOnly.length >= 10 && /^\d+$/.test(digitsOnly) && !/[a-zA-Z]/.test(senderStr)) {
+          isPersonalSms = true;
+        }
+      }
+
+      if (isUtrAlreadyUsed) {
+        return {
+          attributed: false,
+          duplicate: true,
+          lateMatch: false,
+          observationId: savedObs.id,
+          outcomeStatus: 'REFERENCE_ALREADY_USED'
+        };
+      }
+
+      if (isPersonalSms) {
+        return {
+          attributed: false,
+          duplicate: false,
+          lateMatch: false,
+          observationId: savedObs.id,
+          outcomeStatus: 'PERSONAL_SMS_REJECTED'
+        };
+      }
 
       if (isEligibleStatus && isAmountMatch && isTimeValid) {
         const wasActive = currentSession.status === PaymentStatus.ACTIVE;
@@ -364,6 +477,53 @@ export class AttributionEngine {
 
         const graceTimer = setTimeout(() => {
           this.pendingGraceTimers.delete(targetSessionId);
+          // Check if session became terminal during the grace window
+          const latestSession = this.sessionRepo.findById(targetSessionId);
+          if (!latestSession || (isTerminalStatus(latestSession.status) && latestSession.status !== PaymentStatus.SUCCESS)) {
+            const sessionStatus = latestSession ? latestSession.status : 'EXPIRED';
+            this.obsRepo.markLateUnmatched(targetObsId);
+            if (this.auditRepo) {
+              this.auditRepo.log({
+                merchantId: targetMerchantId,
+                entityType: 'PAYMENT_SESSION',
+                entityId: targetSessionId,
+                action: 'LATE_OBSERVATION_DETECTED',
+                actorType: 'SYSTEM',
+                details: {
+                  observationId: targetObsId,
+                  source: targetSource,
+                  sessionStatus
+                }
+              });
+            }
+            if (this.ticketRepo && latestSession?.customerId) {
+              this.ticketRepo.createTicket({
+                merchantId: targetMerchantId,
+                customerId: latestSession.customerId,
+                paymentId: targetSessionId,
+                subject: `[LATE PAYMENT DETECTED] Order #${targetOrderId}`,
+                status: TicketStatus.OPEN,
+                initialMessage: {
+                  senderType: SenderType.ADMIN,
+                  senderId: targetMerchantId,
+                  message: `A delayed payment observation of ${targetAmountPaise / 100n} INR was detected after session ${targetSessionId} ended with status ${sessionStatus}. Flagged for manual merchant reconciliation.`
+                }
+              });
+            }
+            this.eventEmitter.emit('PAYMENT.LATE_DETECTED', {
+              paymentId: targetSessionId,
+              orderId: targetOrderId,
+              merchantId: targetMerchantId,
+              amountPaise: targetAmountPaise,
+              observationId: targetObsId
+            });
+            return;
+          }
+
+          if (latestSession.status === PaymentStatus.SUCCESS) {
+            return;
+          }
+
           // 5 seconds elapsed without second source: finalize as Level 1
           const finalResult = this.sessionRepo.recordVerificationSource(
             targetSessionId,
@@ -420,12 +580,13 @@ export class AttributionEngine {
 
     // Check if observation confirms a recently successful session on this receiving account (within 60s)
     // Upgrades verification level (e.g. from Level 1 -> Level 2 -> Level 3)
+    const sixtySecsAgo = new Date(Date.now() - 60000).toISOString();
     const recentSuccessSession = this.sessionRepo.db.queryOne(`
       SELECT * FROM payment_sessions
       WHERE receiving_account_id = ? AND status = 'SUCCESS'
-        AND amount_paise = ? AND completed_at >= datetime('now', '-60 seconds')
+        AND amount_paise = ? AND completed_at >= ?
       ORDER BY completed_at DESC LIMIT 1
-    `, [normalizedObs.receivingAccountId, Number(normalizedObs.amountPaise)]);
+    `, [normalizedObs.receivingAccountId, Number(normalizedObs.amountPaise), sixtySecsAgo]);
 
     if (recentSuccessSession) {
       // Check if this session's attributed observation had a UTR
@@ -437,6 +598,47 @@ export class AttributionEngine {
       const isUtrConflict = normalizedObs.bankReferenceNumber &&
         existingObs?.bankReferenceNumber &&
         normalizedObs.bankReferenceNumber !== existingObs.bankReferenceNumber;
+
+      if (isUtrConflict) {
+        if (this.auditRepo) {
+          this.auditRepo.log({
+            merchantId: recentSuccessSession.merchant_id,
+            entityType: 'PAYMENT_SESSION',
+            entityId: recentSuccessSession.id,
+            action: 'DUPLICATE_PAYMENT_UTR_CONFLICT',
+            actorType: 'SYSTEM',
+            details: {
+              observationId: savedObs.id,
+              existingUtr: existingObs?.bankReferenceNumber,
+              newUtr: normalizedObs.bankReferenceNumber,
+              amountPaise: normalizedObs.amountPaise.toString()
+            }
+          });
+        }
+        if (this.ticketRepo && recentSuccessSession.customer_id) {
+          this.ticketRepo.createTicket({
+            merchantId: recentSuccessSession.merchant_id,
+            customerId: recentSuccessSession.customer_id,
+            paymentId: recentSuccessSession.id,
+            subject: `[DUPLICATE PAYMENT DETECTED] Order #${recentSuccessSession.order_id}`,
+            status: TicketStatus.OPEN,
+            initialMessage: {
+              senderType: SenderType.ADMIN,
+              senderId: recentSuccessSession.merchant_id,
+              message: `A duplicate payment of ${normalizedObs.amountPaise / 100n} INR with reference ${normalizedObs.bankReferenceNumber} was received within 60s of completed order #${recentSuccessSession.order_id} (reference ${existingObs?.bankReferenceNumber || 'N/A'}). Flagged for merchant refund reconciliation.`
+            }
+          });
+        }
+        this.eventEmitter.emit('PAYMENT.DUPLICATE_DETECTED', {
+          paymentId: recentSuccessSession.id,
+          orderId: recentSuccessSession.order_id,
+          merchantId: recentSuccessSession.merchant_id,
+          observationId: savedObs.id,
+          existingUtr: existingObs?.bankReferenceNumber,
+          newUtr: normalizedObs.bankReferenceNumber,
+          amountPaise: normalizedObs.amountPaise
+        });
+      }
 
       const sessionSlotStart = recentSuccessSession.slot_acquired_at
         ? new Date(new Date(recentSuccessSession.slot_acquired_at).getTime() - 30000)

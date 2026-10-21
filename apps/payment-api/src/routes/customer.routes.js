@@ -8,6 +8,21 @@ const OTP_MAX_ATTEMPTS = 5;
 const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
 
 /**
+ * Safely masks customer email address for public responses without leaking length or erroring on short strings.
+ * @param {string} email
+ * @returns {string | null}
+ */
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  const atIndex = email.indexOf('@');
+  if (atIndex <= 0) return '***';
+  const user = email.slice(0, atIndex);
+  const domain = email.slice(atIndex + 1);
+  const visible = user.slice(0, Math.min(2, user.length));
+  return `${visible}***@${domain || '***'}`;
+}
+
+/**
  * Registers gateway-owned customer identity and session routes.
  * @param {HttpServer} server
  * @param {{
@@ -34,7 +49,8 @@ export function registerCustomerRoutes(server, ctx) {
 
   // Helper to set session cookie header
   function buildSessionCookie(token, maxAgeSeconds = 30 * 24 * 3600) {
-    return `youpi_session=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax`;
+    const isProd = process.env.NODE_ENV === 'production';
+    return `youpi_session=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${isProd ? '; Secure' : ''}`;
   }
 
   // Pending signup challenges cache: mobileNumber -> { otpCode, expiresAt, name, email }
@@ -43,18 +59,66 @@ export function registerCustomerRoutes(server, ctx) {
   // Throttles OTP dispatch per mobile number so the WhatsApp channel cannot be flooded/cost-abused.
   const otpRequestLog = new Map();
 
+  // Throttles check-user inquiries to prevent bulk mobile number scanning / user enumeration.
+  const checkUserRateMap = new Map();
+  const checkUserRateCleaner = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, timestamps] of checkUserRateMap) {
+      const active = Array.isArray(timestamps) ? timestamps.filter(t => now - t < 60000) : [];
+      if (active.length === 0) {
+        checkUserRateMap.delete(ip);
+      } else {
+        checkUserRateMap.set(ip, active);
+      }
+    }
+  }, 60000);
+  if (checkUserRateCleaner.unref) checkUserRateCleaner.unref();
+
+  /**
+   * Resolves the configured cooldown between consecutive OTP dispatches.
+   * Prioritizes explicit runtime options (ctx.otpCooldownMs), environment overrides
+   * (OTP_RESEND_COOLDOWN_MS), and defaults to 30 seconds.
+   */
+  function getOtpCooldownMs() {
+    if (ctx && typeof ctx.otpCooldownMs === 'number' && ctx.otpCooldownMs >= 0) {
+      return ctx.otpCooldownMs;
+    }
+    if (process.env.OTP_RESEND_COOLDOWN_MS !== undefined) {
+      const val = Number(process.env.OTP_RESEND_COOLDOWN_MS);
+      if (Number.isFinite(val) && val >= 0) {
+        return val;
+      }
+    }
+    return OTP_RESEND_COOLDOWN_MS;
+  }
+
   /**
    * Records an OTP request and reports whether the caller is within the resend cooldown.
    * Entries older than the cooldown are pruned on each call.
    */
   function isOtpThrottled(mobile) {
+    const cooldownMs = getOtpCooldownMs();
+    if (cooldownMs === 0) {
+      return false;
+    }
     const now = Date.now();
     for (const [key, at] of otpRequestLog) {
-      if (now - at > OTP_RESEND_COOLDOWN_MS) otpRequestLog.delete(key);
+      if (now - at > cooldownMs) otpRequestLog.delete(key);
     }
     if (otpRequestLog.has(mobile)) return true;
     otpRequestLog.set(mobile, now);
     return false;
+  }
+
+  // Expose reset helper for tests to reset rate-limiting state deterministically
+  if (ctx) {
+    ctx.resetOtpCooldown = (mobile) => {
+      if (mobile) {
+        otpRequestLog.delete(normalizeMobile(mobile) || mobile);
+      } else {
+        otpRequestLog.clear();
+      }
+    };
   }
 
   // Helper to get Berry Service
@@ -79,6 +143,20 @@ export function registerCustomerRoutes(server, ctx) {
       return;
     }
 
+    const ip = req.socket?.remoteAddress || '127.0.0.1';
+    const now = Date.now();
+    if (checkUserRateMap.size > 10000) {
+      checkUserRateMap.clear();
+    }
+    const timestamps = checkUserRateMap.get(ip) || [];
+    const recent = timestamps.filter(t => now - t < 60000);
+    if (recent.length >= 60) {
+      HttpServer.json(res, 429, { error: 'Too many requests. Please try again in a minute.' });
+      return;
+    }
+    recent.push(now);
+    checkUserRateMap.set(ip, recent);
+
     const existingUser = ctx.customerRepo.findByMobile(cleanMobile);
 
     HttpServer.json(res, 200, {
@@ -88,8 +166,8 @@ export function registerCustomerRoutes(server, ctx) {
       customer: existingUser ? {
         id: existingUser.id,
         name: existingUser.name,
-        email: existingUser.email,
-        mobileNumber: existingUser.mobileNumber
+        email: maskEmail(existingUser.email),
+        mobileNumber: cleanMobile
       } : null
     });
   });

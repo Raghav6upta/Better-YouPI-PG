@@ -2,7 +2,7 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import '../../../../scripts/test-support.js';
-import { Database, runMigrations, MerchantRepository, PaymentSessionRepository } from '@youpi/db';
+import { Database, runMigrations, MerchantRepository, PaymentSessionRepository, ObservationRepository } from '@youpi/db';
 import { WebhookEngine } from '../webhook-engine.js';
 import { verifyHmac } from '@youpi/common';
 
@@ -103,12 +103,62 @@ describe('Webhook Engine Integration Tests', () => {
     const rawSig = hook.headers['x-gateway-signature'].replace('sha256=', '');
     const isValid = verifyHmac(JSON.stringify(hook.body), merchant.webhookSecret, rawSig);
     assert.equal(isValid, true);
+    assert.ok('utr' in hook.body);
 
     // Verify recorded in DB as successful
     const delivery = db.queryOne('SELECT * FROM webhook_deliveries WHERE id = ?', [result.deliveryId]);
     assert.ok(delivery);
     assert.equal(delivery.is_successful, 1);
     assert.equal(delivery.response_status, 200);
+  });
+
+  test('carries the bank reference (UTR) from the attributed observation', async () => {
+    const merchant = merchantRepo.create({
+      businessName: 'UTR Store',
+      slug: 'utr-store',
+      contactEmail: 'utr@example.com',
+      contactPhone: '9876543210',
+      webhookUrl: `http://localhost:${receiverPort}/webhook-utr`,
+      webhookSecret: 'test_secret_for_utr_signatures_123'
+    });
+
+    const session = sessionRepo.create({
+      merchantId: merchant.id,
+      orderId: 'HOOK-ORD-UTR',
+      amountPaise: 20000n,
+      receivingAccountId: '00000000-0000-0000-0000-000000000002'
+    });
+
+    // The UTR lives on the observation, not on the session row.
+    const observation = new ObservationRepository(db).create({
+      receivingAccountId: session.receivingAccountId,
+      source: 'GOOGLE_MESSAGES',
+      rawText: 'Rs 200.00 credited UPI ref 412345678901',
+      amountPaise: 20000n,
+      bankReferenceNumber: '412345678901',
+      observedAt: new Date(),
+      fingerprintHash: 'fp_utr_test'
+    });
+    db.execute('UPDATE payment_sessions SET attributed_observation_id = ? WHERE id = ?', [observation.id, session.id]);
+
+    receivedWebhooks = [];
+    shouldReceiverFail = false;
+
+    const result = await webhookEngine.dispatch('SUCCESS', sessionRepo.findById(session.id));
+    assert.equal(result.delivered, true);
+
+    const hook = receivedWebhooks.find(h => h.body.orderId === 'HOOK-ORD-UTR');
+    assert.ok(hook, 'webhook not received');
+    assert.equal(hook.body.utr, '412345678901');
+
+    // The signature must still cover the body that now includes the UTR.
+    const rawSig = hook.headers['x-gateway-signature'].replace('sha256=', '');
+    assert.equal(verifyHmac(JSON.stringify(hook.body), merchant.webhookSecret, rawSig), true);
+
+    // The documented webhook contract must expose every field.
+    for (const field of ['event', 'paymentId', 'orderId', 'amount', 'amountPaise', 'currency', 'method', 'utr', 'completedAt', 'metadata']) {
+      assert.ok(field in hook.body, `missing documented webhook field: ${field}`);
+    }
   });
 
   test('records failure and supports retry on merchant HTTP 500 error', async () => {
@@ -151,5 +201,43 @@ describe('Webhook Engine Integration Tests', () => {
 
     const updatedDelivery = db.queryOne('SELECT * FROM webhook_deliveries WHERE id = ?', [result.deliveryId]);
     assert.equal(updatedDelivery.is_successful, 1);
+
+    // A retried delivery must carry the SAME MAC as a first delivery: the signature covers
+    // the exact transmitted body, so the merchant's verification accepts it too. Signing the
+    // retry as `${timestamp}.${payload}` made every retry fail verification.
+    const retried = receivedWebhooks.filter(h => h.body && h.body.orderId === 'HOOK-ORD-FAIL').pop();
+    assert.ok(retried, 'retried webhook not received');
+    const retrySig = retried.headers['x-gateway-signature'].replace('sha256=', '');
+    assert.equal(verifyHmac(JSON.stringify(retried.body), merchant.webhookSecret, retrySig), true);
+  });
+
+  test('persists delivery failure record when merchant webhookSecret is missing', async () => {
+    const merchantNoSecret = merchantRepo.create({
+      businessName: 'No Secret Store',
+      slug: 'no-secret-store',
+      contactEmail: 'nosecret@example.com',
+      contactPhone: '9876543210',
+      webhookUrl: `http://localhost:${receiverPort}/webhook-no-secret`,
+      webhookSecret: 'temp_secret'
+    });
+    // Explicitly set secret to empty string in DB to test missing secret guard
+    db.execute("UPDATE merchants SET webhook_secret = '' WHERE id = ?", [merchantNoSecret.id]);
+
+    const session = sessionRepo.create({
+      merchantId: merchantNoSecret.id,
+      orderId: 'HOOK-ORD-NO-SEC',
+      amountPaise: 10000n
+    });
+
+    const res = await webhookEngine.dispatch('SUCCESS', session);
+    assert.equal(res.delivered, false);
+    assert.equal(res.status, 500);
+    assert.ok(res.deliveryId);
+
+    const recorded = db.queryOne('SELECT * FROM webhook_deliveries WHERE id = ?', [res.deliveryId]);
+    assert.ok(recorded);
+    assert.equal(recorded.is_successful, 0);
+    assert.equal(recorded.response_status, 500);
+    assert.match(recorded.response_body, /webhookSecret is not configured/);
   });
 });
