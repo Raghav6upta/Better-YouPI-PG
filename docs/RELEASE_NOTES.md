@@ -34,3 +34,12 @@ Hosted Windows and Linux CI passed for the published beta. Check [GitHub Actions
 ## Release limitations
 
 This is an experimental beta, not production certification. See the same-amount attribution limitation in [Amazon architecture](AMAZON_PAY.md), dependency/session cautions in [security](../SECURITY.md), and the unresolved whole-project license in [licensing status](../LICENSING.md).
+# Upstream sync and mobile QR checkout
+
+- Synced upstream `youpi-pg/YouPI-PG` through `90eecd5` (21 October 2026), including payment-state hardening, verification rejection handling, shared QR generation, merchant iframe configuration and checkout partials.
+- Retained dashboard-managed Amazon Pay and WhatsApp OTP. The consolidated observer poller skips SMS/Gmail in Amazon mode, and the durable Amazon webhook outbox remains enabled.
+- Added a mobile button whose link is identical to the QR payload. Added checks for receiving UPI ID, amount, expiry, app return and stale state responses.
+- Removed invented QR fallback details, added a white QR border, and fixed duplicate layout wrappers introduced by the upstream template extraction that collapsed the desktop checkout.
+- Upstream Docker files are included, but Amazon sign-in still requires a supported browser and desktop. The Alpine image has not been validated for the Amazon browser workflow; use the documented host installation for Amazon Pay. The image includes the Amazon workspace manifest and runs the logging protection patch.
+
+On 21 October 2026, the operator paid ₹1 using the real checkout QR and Amazon verification marked it successful. The local webhook was initially blocked by the private-address URL guard; after explicitly allowing the loopback test receiver, the existing verified payment was resent and its signature and amount were verified. Real phone app launch remains an operator acceptance check.

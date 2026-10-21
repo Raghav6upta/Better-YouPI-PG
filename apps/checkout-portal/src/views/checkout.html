@@ -12,7 +12,6 @@
 
   <!-- include:partials/splash.html -->
 
-
     <!-- include:partials/sidebar.html -->
 
     <!-- include:partials/header.html -->
@@ -38,6 +37,9 @@
     let sse = null;
     let activeCustomer = null;
     let activeToken = null;
+    let stateRevision = 0;
+    let pendingStateLoad = null;
+    let checkoutLocked = false;
 
     const STORAGE_KEY_IDENTITY = 'youpi.customer.identity';
     const STORAGE_KEY_ACCOUNTS = 'youpi.customer.accounts';
@@ -958,8 +960,47 @@
     }
 
     let currentSelectedMethod = 'UPI';
+    // Use exactly the same server-generated URI as the QR. Do not rebuild it here.
+    function updateUpiAppLink(data) {
+      const action = document.getElementById('mobileUpiAction');
+      const link = document.getElementById('btnPayWithUpiApp');
+      let valid = false;
+      try {
+        const uri = new URL(data.upiUri);
+        valid = data.status === 'ACTIVE' && data.method === 'UPI' && currentSelectedMethod === 'UPI' &&
+          !data.isBanned && !data.fraudDetected && Date.parse(data.expiresAt) > Date.now() &&
+          uri.protocol === 'upi:' && uri.host === 'pay' && !uri.username && !uri.password && !uri.hash && !uri.pathname &&
+          uri.searchParams.getAll('pa').length === 1 && uri.searchParams.getAll('am').length === 1 &&
+          /^[^\s@]+@[^\s@]+$/.test(data.payeeVpa || '') && uri.searchParams.get('pa') === data.payeeVpa &&
+          /^\d+\.\d{2}$/.test(data.amount) && Number(data.amount) > 0 && uri.searchParams.get('am') === data.amount;
+      } catch { }
+      action.hidden = !valid;
+      if (valid) link.setAttribute('href', data.upiUri);
+      else link.removeAttribute('href');
+    }
+    const mobileUpi = { clear: () => updateUpiAppLink(null), update: updateUpiAppLink };
+    let returningFromUpiApp = false;
+    document.getElementById('btnPayWithUpiApp').addEventListener('click', event => {
+      updateUpiAppLink(state);
+      if (document.getElementById('mobileUpiAction').hidden || document.getElementById('viewUpiContent').hidden) {
+        event.preventDefault();
+        return;
+      }
+      returningFromUpiApp = true;
+      // The anchor opens the app directly from this tap. It never marks payment successful.
+    });
+    function refreshAfterUpiApp() {
+      if (returningFromUpiApp && document.visibilityState === 'visible') {
+        returningFromUpiApp = false;
+        mobileUpi.clear();
+        loadState();
+      }
+    }
+    window.addEventListener('focus', refreshAfterUpiApp);
+    document.addEventListener('visibilitychange', refreshAfterUpiApp);
 
     function hideAllContent() {
+      mobileUpi?.clear();
       document.getElementById('viewUpiContent').hidden = true;
       const vCod = document.getElementById('viewCodContent');
       if (vCod) vCod.hidden = true;
@@ -1142,6 +1183,7 @@
     }
 
     async function selectPaymentMethod(method) {
+      if (checkoutLocked || !state || ['SUCCESS', 'FAILED', 'EXPIRED', 'CANCELLED', 'BLOCKED'].includes(state.status)) return;
       currentSelectedMethod = method;
       updateMethodTabsUI(method);
       hideAllContent();
@@ -1170,6 +1212,7 @@
           body: JSON.stringify({ method, deviceId: DeviceIdentity?.currentDeviceId })
         });
         const resData = await res.json();
+        if (checkoutLocked || ['SUCCESS', 'FAILED', 'EXPIRED', 'CANCELLED', 'BLOCKED'].includes(state.status)) return;
         if (res.ok && resData) {
           state.method = method;
           if (resData.timeRemainingSeconds !== undefined) {
@@ -1191,7 +1234,7 @@
             });
           } else if (method === 'UPI') {
             if (resData.status === 'ACTIVE') {
-              loadQrSvg();
+              loadState();
               runCountdown(resData.timeRemainingSeconds || 300, sec => {
                 const el = document.getElementById('activeTimerText');
                 if (el) el.textContent = formatTime(sec);
@@ -1442,12 +1485,21 @@
     }
 
     async function loadState() {
+      // Coalesce polls; an SSE update invalidates an older in-flight HTTP snapshot.
+      if (pendingStateLoad) return pendingStateLoad;
+      const revision = stateRevision;
+      pendingStateLoad = fetchState(revision);
+      try { await pendingStateLoad; } finally { pendingStateLoad = null; }
+    }
+
+    async function fetchState(revision) {
       try {
         await DeviceIdentity.getOrRegister();
         const headers = getApiHeaders();
 
         const res = await fetch(`${API_BASE}/api/v1/checkout/${PAYMENT_ID}/state`, { headers });
         const data = await res.json().catch(() => ({}));
+        if (revision !== stateRevision) return;
 
         if (res.status === 409 || data.error === 'DUPLICATE_SESSION_DETECTED') {
           renderDuplicateSession(data);
@@ -1456,6 +1508,7 @@
         }
 
         if (!res.ok) {
+          mobileUpi?.clear();
           dismissSplashScreen();
           return;
         }
@@ -1463,6 +1516,8 @@
         renderState(data);
         dismissSplashScreen();
       } catch (e) {
+        if (revision !== stateRevision) return;
+        mobileUpi?.clear();
         console.warn('loadState error:', e);
         dismissSplashScreen();
       }
@@ -1534,7 +1589,11 @@
     }
 
     function renderState(data) {
+      if (checkoutLocked) return;
+      if (state && ['SUCCESS', 'FAILED', 'EXPIRED', 'CANCELLED', 'BLOCKED'].includes(state.status) && data.status !== state.status) return;
+      stateRevision++;
       state = data;
+      mobileUpi?.clear();
       const b = data.branding || {};
       const appName = b.appName || 'YouPI PG';
       const merchantName = data.merchantName || 'Merchant Checkout';
@@ -2090,6 +2149,7 @@
           document.getElementById('viewUpiContent').hidden = false;
           document.getElementById('ypgStickyFooter').style.display = 'flex';
           loadQrSvg();
+          mobileUpi?.update(data, currentSelectedMethod);
 
           const btnContinue = document.getElementById('btnContinuePayment');
 
@@ -2111,6 +2171,7 @@
           }
 
           runCountdown(remainingSec, sec => {
+            if (sec <= 0) mobileUpi?.clear();
             const tText = document.getElementById('activeTimerText');
             if (tText) tText.textContent = formatTime(sec);
 
@@ -2223,34 +2284,27 @@
       qBanner.style.display = 'block';
     }
 
-    // --- PURE QR SVG LOADER (ALWAYS LOADS & SHOWS QR CODE REGARDLESS OF SERVER STATUS) ---
+    // Load only a real, active payment QR, and reuse it while its URI is unchanged.
+    let renderedQrUri = null;
+    let qrLoadInFlight = false;
     async function loadQrSvg() {
       const container = document.getElementById('qrImageContainer');
-      if (!container) return;
+      if (!container || state?.status !== 'ACTIVE' || state.method !== 'UPI' ||
+          !state.upiUri || Date.parse(state.expiresAt) <= Date.now()) return;
+      const uri = state.upiUri;
+      if (renderedQrUri === uri || qrLoadInFlight) return;
+      qrLoadInFlight = true;
       try {
-        const res = await fetch(`/checkout/${PAYMENT_ID}/qr.svg`);
-        if (res.ok) {
-          const svg = await res.text();
-          if (svg && svg.includes('<svg')) {
-            container.innerHTML = svg;
-            return;
-          }
+        const res = await fetch('/checkout/' + PAYMENT_ID + '/qr.svg');
+        if (!res.ok) throw new Error('QR unavailable');
+        const svg = await res.text();
+        if (state.status === 'ACTIVE' && state.method === 'UPI' && state.upiUri === uri && Date.parse(state.expiresAt) > Date.now() && svg.includes('<svg')) {
+          container.innerHTML = svg;
+          renderedQrUri = uri;
         }
-      } catch (e) {
-        console.warn('loadQrSvg error:', e);
-      }
-      // Automatic retry to guarantee QR code is loaded
-      setTimeout(async () => {
-        try {
-          const res = await fetch(`/checkout/${PAYMENT_ID}/qr.svg`);
-          if (res.ok) {
-            const svg = await res.text();
-            if (svg && svg.includes('<svg')) {
-              container.innerHTML = svg;
-            }
-          }
-        } catch (e) {}
-      }, 400);
+      } catch {
+        container.textContent = 'QR unavailable. Retrying...';
+      } finally { qrLoadInFlight = false; }
     }
 
     function copyVpaId() {
@@ -2455,6 +2509,9 @@
 
 
     function renderBlockedState(data) {
+      checkoutLocked = true;
+      stateRevision++;
+      mobileUpi?.clear();
       closeProcessingModal();
       closeCancelPaymentModal();
       if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
@@ -2533,6 +2590,9 @@
 
     let lastDuplicateSessionPayload = null;
     function renderDuplicateSession(data) {
+      checkoutLocked = true;
+      stateRevision++;
+      mobileUpi?.clear();
       lastDuplicateSessionPayload = data;
       if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
       if (queuePollTimer) { clearInterval(queuePollTimer); queuePollTimer = null; }

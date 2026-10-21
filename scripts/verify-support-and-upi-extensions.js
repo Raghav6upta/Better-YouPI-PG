@@ -316,13 +316,13 @@ async function runComprehensiveVerification() {
     // --- 19, 20, 21, 22, 23. Global UPI Parameter Normalization ---
     console.log('\n[Requirements 19 - 23] Global UPI Parameter Normalization...');
 
-    // 19 & 20: Canonical UPI URI contains ONLY pa, pn, am, tn in exact canonical order
+    // 19 & 20: Canonical UPI URI carries the receiver, amount, INR and order note.
     const canonicalUri = buildUpiUri({
       payeeVpa: account.upiId,
       payeeName: account.payeeName,
       amountPaise: session.amountPaise,
       transactionRef: session.orderId,
-      currency: 'INR' // currency passed, must be ignored!
+      currency: 'INR'
     });
 
     console.log('  [Canonical UPI URI]:', canonicalUri);
@@ -333,11 +333,11 @@ async function runComprehensiveVerification() {
     assert.equal(parsedUri.searchParams.get('am'), '1.00');
     assert.equal(parsedUri.searchParams.get('tn'), 'CF-TEST-001');
 
-    // Strictly NO tr, NO cu, NO extra params
+    // No fabricated merchant identifiers or transaction references.
     assert.equal(parsedUri.searchParams.get('tr'), null);
-    assert.equal(parsedUri.searchParams.get('cu'), null);
-    assert.deepEqual([...parsedUri.searchParams.keys()], ['pa', 'pn', 'am', 'tn']);
-    console.log('  [✓] Req 19 & 20 Passed: UPI URI contains exactly [pa, pn, am, tn] and strictly NO cu or tr');
+    assert.equal(parsedUri.searchParams.get('cu'), 'INR');
+    assert.deepEqual([...parsedUri.searchParams.keys()], ['pa', 'pn', 'am', 'cu', 'tn']);
+    console.log('  [✓] Req 19 & 20 Passed: UPI URI contains exactly [pa, pn, am, cu, tn]');
 
     // 21. QR Code payload uses the exact same parameter set
     const qrSvg = generateQrSvg(canonicalUri, 220);
@@ -362,10 +362,10 @@ async function runComprehensiveVerification() {
 
     const intentPayload = intentUri.split('?')[1].split('#')[0];
     const intentParams = new URLSearchParams(intentPayload);
-    assert.deepEqual([...intentParams.keys()], ['pa', 'pn', 'am', 'tn']);
-    assert.equal(intentParams.get('cu'), null);
+    assert.deepEqual([...intentParams.keys()], ['pa', 'pn', 'am', 'cu', 'tn']);
+    assert.equal(intentParams.get('cu'), 'INR');
     assert.equal(intentParams.get('tr'), null);
-    console.log('  [✓] Req 22 & 23 Passed: Provider intent preserves package targeting and has ONLY pa, pn, am, tn');
+    console.log('  [✓] Req 22 & 23 Passed: Provider intent preserves package targeting and canonical UPI parameters');
 
     // --- 24. Attribution, Timer & Queue State Invariance ---
     console.log('\n[Requirement 24] Attribution, Timers & Verification Invariance...');

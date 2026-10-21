@@ -3052,3 +3052,10 @@
         max-height: 170px !important;
       }
     }
+/* Mobile app launch remains independent of the QR card. */
+.ypg-mobile-upi-action { margin: 12px 0 16px; }
+.ypg-mobile-upi-action[hidden] { display: none !important; }
+@media (min-width: 901px) and (pointer: fine) { .ypg-mobile-upi-action { display: none; } }
+.ypg-mobile-upi-button { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 10px 16px; border-radius: 10px; background: var(--ypg-blue, #0b63e5); color: white; font-weight: 700; text-decoration: none; text-align: center; }
+.ypg-mobile-upi-button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+.ypg-mobile-upi-action p { margin: 8px 0 0; color: #64748b; font-size: 12px; line-height: 1.5; }

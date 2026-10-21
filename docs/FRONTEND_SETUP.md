@@ -76,7 +76,19 @@ Open a new checkout from your merchant store. Enter the customer's WhatsApp numb
 
 Amazon Pay verifies the incoming payment. The merchant must verify the signed server webhook before treating the order as paid. Gmail and SMS observers are not required in Amazon mode.
 
+### Pay on the same phone
+
+On a mobile-sized checkout, tap **Pay with a UPI app**. The button opens the exact `upi://pay?...` URI encoded in the QR, including the receiving UPI ID (`pa`), payee name (`pn`), amount (`am`), currency (`cu=INR`) and order note (`tn`). The browser does not construct a separate payment request. For example, `pa=shop%40apl` decodes to the receiving UPI ID `shop@apl`; `%40` is the URL encoding of `@`.
+
+The app opens directly from your tap. Return to checkout after paying; the gateway still waits for the Amazon receipt. Opening an app or returning to the browser does not confirm payment. The QR stays available, and both payment controls stop being usable when the session is no longer active.
+
+Generic UPI app links are intended for supported Android browsers with an installed UPI app. Desktop responsive mode lets you inspect the button but cannot launch a phone app. iOS and embedded browsers may not handle the generic link; use the QR from another phone if it does not open. This button does not promise compatibility with every app or make a personal receiving VPA a registered merchant VPA. See [Chrome's app-launch guidance](https://developer.chrome.com/docs/android/intents) and [Google's separate iOS integration](https://developers.google.com/pay/india/api/ios/in-app-payments).
+
+If a payment URI has no `pa`, a wrong UPI ID, or a wrong amount, do not pay. Check the receiving account in Store Settings and start a new checkout. A receiving account is captured when the order is created, so editing the account does not rewrite an existing order. Missing payment data now produces an unavailable QR instead of a fabricated fallback.
+
 The current local test page is http://127.0.0.1:6105. It opens a real ₹1 checkout in a separate tab and checks the signed webhook. It requires both connections to be ready; it does not simulate payment.
+
+If your local merchant webhook uses a loopback or LAN address, explicitly set `YOUPI_ALLOW_PRIVATE_WEBHOOKS=true` in your local environment and restart the payment API. Otherwise the outbound URL guard blocks delivery even when the payment succeeds. Keep the default restriction for deployments that only use public webhook endpoints. A blocked delivery needs to be resent after correcting the configuration; do not ask the customer to pay again.
 
 ## Restart locally
 

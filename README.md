@@ -21,6 +21,7 @@ The observer defaults to a **five-second delay after each completed scan while a
 | Dedicated WhatsApp OTP tab | QR or phone-code linking, saved sessions and a test-message control |
 | Honest OTP failure responses | Checkout does not claim a code was sent when dispatch failed |
 | Optional customer email | Customers can sign in with WhatsApp without supplying email |
+| Mobile UPI payment button | Opens the exact payment link encoded in the QR; scanning remains available |
 | Receipt ledger and durable webhook outbox | Replay protection and recoverable confirmation delivery |
 | Dependency logging protection | Reviewed Signal session logs removed before WhatsApp can start |
 

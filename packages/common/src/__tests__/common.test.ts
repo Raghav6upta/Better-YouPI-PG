@@ -109,8 +109,9 @@ describe('@youpi/common Unit Tests', () => {
       assert.equal(parsed.searchParams.get('am'), '200.00');
       assert.equal(parsed.searchParams.get('tn'), 'ORDER-99');
       assert.equal(parsed.searchParams.get('tr'), null);
-      assert.equal(parsed.searchParams.get('cu'), null);
-      assert.deepEqual([...parsed.searchParams.keys()], ['pa', 'pn', 'am', 'tn']);
+      assert.equal(parsed.searchParams.get('cu'), 'INR');
+      assert.ok(uri.includes('pn=Acme%20Store'));
+      assert.deepEqual([...parsed.searchParams.keys()], ['pa', 'pn', 'am', 'cu', 'tn']);
     });
   });
 

@@ -129,23 +129,23 @@ async function verifyProductionUpi() {
     assert.equal(stateRes.orderId, testOrderId);
 
     // 5. Verify UPI URI format and parameter order
-    const expectedUpiUri = 'upi://pay?pa=9876543210%40axl&pn=Demo Store+Merchant&am=1.00&tn=COIN-ORD-1788969252735';
+    const expectedUpiUri = 'upi://pay?pa=9876543210%40axl&pn=Demo%20Store%20Merchant&am=1.00&cu=INR&tn=COIN-ORD-1788969252735';
     assert.equal(stateRes.upiUri, expectedUpiUri, `UPI URI does not match expected format!\nExpected: ${expectedUpiUri}\nActual:   ${stateRes.upiUri}`);
 
     // Verify parameter keys and ordering
     const parsedUrl = new URL(stateRes.upiUri);
     const paramKeys = [...parsedUrl.searchParams.keys()];
     console.log('\nParameter keys in order:', paramKeys);
-    assert.deepEqual(paramKeys, ['pa', 'pn', 'am', 'tn'], 'Parameter order must be exactly pa, pn, am, tn');
+    assert.deepEqual(paramKeys, ['pa', 'pn', 'am', 'cu', 'tn'], 'Canonical parameters must preserve receiver, amount, currency and note');
 
     assert.equal(parsedUrl.searchParams.get('pa'), '9876543210@axl');
     assert.equal(parsedUrl.searchParams.get('pn'), 'Demo Store Merchant');
     assert.equal(parsedUrl.searchParams.get('am'), '1.00');
     assert.equal(parsedUrl.searchParams.get('tn'), testOrderId);
     assert.equal(parsedUrl.searchParams.get('tr'), null, 'tr parameter must be absent');
-    assert.equal(parsedUrl.searchParams.get('cu'), null, 'cu parameter must be absent');
+    assert.equal(parsedUrl.searchParams.get('cu'), 'INR', 'cu parameter must identify INR');
 
-    console.log('[✓] Parameter order verified: 1. pa, 2. pn, 3. am, 4. tn');
+    console.log('[✓] Parameter order verified: pa, pn, am, cu, tn');
     console.log('[✓] Dynamic VPA verified:', parsedUrl.searchParams.get('pa'));
     console.log('[✓] Dynamic Payee Name verified:', parsedUrl.searchParams.get('pn'));
     console.log('[✓] Dynamic Amount verified:', parsedUrl.searchParams.get('am'));
