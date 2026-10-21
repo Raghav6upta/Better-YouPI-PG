@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { runMigrations } from '../packages/db/src/migrate.js';
 import { startControlCenter } from '../apps/control-center/src/index.js';
 import { startCloudflaredSafely } from '../packages/common/src/tunnel-command.js';
+import { getAdminToken } from '../packages/common/src/secrets.js';
 
 if (!process.env.YOUPI_MODE) process.env.YOUPI_MODE = 'localhost';
 if (!process.env.NODE_ENV) process.env.NODE_ENV = 'development';
@@ -13,6 +14,9 @@ console.log('====================================================');
 // 1. Run database migrations & seeds
 console.log('[1/2] Checking and applying database migrations...');
 const migrationResult = runMigrations();
+// Make the documented dashboard unlock token available before the first request.
+// Never print its value; the operator reads it from the private local file.
+getAdminToken();
 console.log(`[✓] Database ready. Default merchant: ${migrationResult.defaultMerchant.businessName}`);
 
 // Check for user-configured Cloudflare Tunnel command
@@ -40,12 +44,13 @@ await cc.processManager.startAll();
 console.log('====================================================');
 console.log('🟢 ALL SERVICES ONLINE & OPERATIONAL');
 console.log('====================================================');
-console.log('• Merchant Panel & Control Hub: http://localhost:6001');
-console.log('• Payment Core REST API:        http://localhost:6100');
-console.log('• Customer Checkout Portal:     http://localhost:7000/checkout/:id');
-console.log('• YOUPI Showcase Store:        http://localhost:5000 (toggleable)');
-console.log('• Gmail Payment Observer:       http://localhost:6003');
-console.log('• Google Messages / SMS Obs:    http://localhost:6002');
+for (const service of cc.processManager.services) {
+  console.log(`- ${service.name}: http://localhost:${service.port}`);
+}
+console.log('Dashboard unlock token: data/.secrets/admin_api_token (or ADMIN_API_TOKEN if configured).');
+if (process.env.AMAZON_PAY_DASHBOARD_MANAGED === 'true') {
+  console.log('Open the admin dashboard to connect Amazon Pay and WhatsApp.');
+}
 console.log('====================================================');
 console.log('Press Ctrl+C to stop all services gracefully.');
 

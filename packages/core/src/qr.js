@@ -39,22 +39,23 @@ export class QrCode {
 export function generateQrSvg(text, boxSize = 240, errorCorrection = 'M') {
   const matrix = QrCode.encode(text, errorCorrection);
   const numModules = matrix.length;
-  const moduleSize = boxSize / numModules;
+  // A QR symbol needs an uninterrupted four-module quiet zone on every side.
+  // Keep SVG coordinates in whole modules so scaling cannot introduce seams
+  // between dark modules, or crop finder patterns against a rounded background.
+  const quietZone = 4;
+  const viewSize = numModules + quietZone * 2;
 
   let rects = '';
   for (let r = 0; r < numModules; r++) {
     for (let c = 0; c < numModules; c++) {
       if (matrix[r][c] === 1) {
-        const x = (c * moduleSize).toFixed(2);
-        const y = (r * moduleSize).toFixed(2);
-        const s = (moduleSize + 0.05).toFixed(2);
-        rects += `<rect x="${x}" y="${y}" width="${s}" height="${s}" fill="#0f172a" />\n`;
+        rects += `<rect x="${c + quietZone}" y="${r + quietZone}" width="1" height="1" fill="#000000" />\n`;
       }
     }
   }
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${boxSize} ${boxSize}" width="100%" height="100%" shape-rendering="crispEdges">
-  <rect width="${boxSize}" height="${boxSize}" fill="#ffffff" rx="8" />
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${viewSize} ${viewSize}" width="${boxSize}" height="${boxSize}" shape-rendering="crispEdges">
+  <rect width="${viewSize}" height="${viewSize}" fill="#ffffff" />
   ${rects}
 </svg>`;
 }

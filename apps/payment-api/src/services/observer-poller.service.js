@@ -1,4 +1,4 @@
-import { getObserverToken } from '@youpi/common';
+import { getObserverToken, getAmazonPayConfig } from '@youpi/common';
 
 /**
  * ObserverPollerService
@@ -23,6 +23,7 @@ export class ObserverPollerService {
    *   minSweepCooldownMs?: number,
    *   smsPort?: number,
    *   gmailPort?: number,
+   *   amazonPort?: number,
    *   observerToken?: string,
    *   autoStart?: boolean
    * }} options
@@ -43,6 +44,7 @@ export class ObserverPollerService {
     this.minSweepCooldownMs = Number(options.minSweepCooldownMs || process.env.OBSERVER_SWEEP_COOLDOWN_MS || 2000);
     this.smsPort = Number(options.smsPort || process.env.SMS_OBSERVER_PORT || 6002);
     this.gmailPort = Number(options.gmailPort || process.env.GMAIL_OBSERVER_PORT || 6003);
+    this.amazonPort = Number(options.amazonPort || process.env.AMAZON_PAY_OBSERVER_PORT || 6004);
     this.observerToken = options.observerToken || null;
 
     // Lifecycle and concurrency control state
@@ -56,6 +58,8 @@ export class ObserverPollerService {
     this._lastGmailSweepTime = 0;
     this._isSmsSweepInFlight = false;
     this._isGmailSweepInFlight = false;
+    this._lastAmazonSweepTime = 0;
+    this._isAmazonSweepInFlight = false;
 
     // Attribution mutex & in-flight hash set to prevent SQLite write contention
     this._isAttributionInProgress = false;
@@ -152,6 +156,7 @@ export class ObserverPollerService {
     this._isAttributionInProgress = false;
     this._isSmsSweepInFlight = false;
     this._isGmailSweepInFlight = false;
+    this._isAmazonSweepInFlight = false;
     this._isIdle = true;
   }
 
@@ -232,7 +237,8 @@ export class ObserverPollerService {
     this._isPollingCycle = true;
 
     try {
-      const activeSessions = this.getActiveSessions();
+      const amazonEnabled = getAmazonPayConfig().enabled;
+      const activeSessions = this.getActiveSessions().filter(session => !amazonEnabled || session.status !== 'SUCCESS');
 
       if (activeSessions.length === 0) {
         this._isIdle = true;
@@ -242,10 +248,14 @@ export class ObserverPollerService {
       this._isIdle = false;
 
       // 1. Concurrently trigger external observer sweeps with strict cooldown & in-flight locks
-      await Promise.allSettled([
-        this.sweepSmsObserver(),
-        this.sweepGmailObserver()
-      ]);
+      if (amazonEnabled) {
+        await this.sweepAmazonObserver();
+      } else {
+        await Promise.allSettled([
+          this.sweepSmsObserver(),
+          this.sweepGmailObserver()
+        ]);
+      }
 
       // 2. Process pending unattributed bank observations in DB under sequential mutex lock
       await this.processPendingAttributions(activeSessions, preferredAccountId);
@@ -260,6 +270,7 @@ export class ObserverPollerService {
    * @returns {Promise<boolean>} True if sweep was dispatched, false if dropped/in-flight/cooldown.
    */
   async sweepSmsObserver() {
+    if (getAmazonPayConfig().enabled) return false;
     const now = Date.now();
     if (this._isSmsSweepInFlight || (now - this._lastSmsSweepTime < this.minSweepCooldownMs)) {
       return false;
@@ -291,6 +302,7 @@ export class ObserverPollerService {
    * @returns {Promise<boolean>} True if sweep was dispatched, false if dropped/in-flight/cooldown.
    */
   async sweepGmailObserver() {
+    if (getAmazonPayConfig().enabled) return false;
     const now = Date.now();
     if (this._isGmailSweepInFlight || (now - this._lastGmailSweepTime < this.minSweepCooldownMs)) {
       return false;
@@ -313,6 +325,28 @@ export class ObserverPollerService {
       return false;
     } finally {
       this._isGmailSweepInFlight = false;
+    }
+  }
+
+  /** Sweeps Amazon only in Amazon mode, using the same coordinated cooldown and in-flight guard. */
+  async sweepAmazonObserver() {
+    if (!getAmazonPayConfig().enabled) return false;
+    const now = Date.now();
+    if (this._isAmazonSweepInFlight || now - this._lastAmazonSweepTime < this.minSweepCooldownMs) return false;
+    this._isAmazonSweepInFlight = true;
+    this._lastAmazonSweepTime = now;
+    try {
+      const token = this.observerToken || getObserverToken();
+      const response = await fetch(`http://127.0.0.1:${this.amazonPort}/api/sweep`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(1500)
+      });
+      return response.ok;
+    } catch {
+      return false;
+    } finally {
+      this._isAmazonSweepInFlight = false;
     }
   }
 
@@ -340,6 +374,9 @@ export class ObserverPollerService {
         if (!Array.isArray(unattributed) || unattributed.length === 0) continue;
 
         for (const obs of unattributed) {
+          // Dashboard mode can change at runtime. Never fall back to bank messages in Amazon mode.
+          if (getAmazonPayConfig().enabled && obs.source !== 'AMAZON_PAY') continue;
+          if (!getAmazonPayConfig().enabled && obs.source === 'AMAZON_PAY') continue;
           const hash = obs.fingerprintHash || obs.id;
           if (this._inFlightObservationHashes.has(hash)) continue;
 

@@ -8,6 +8,21 @@ const OTP_MAX_ATTEMPTS = 5;
 const OTP_RESEND_COOLDOWN_MS = 30 * 1000;
 
 /**
+ * Safely masks customer email address for public responses without leaking length or erroring on short strings.
+ * @param {string} email
+ * @returns {string | null}
+ */
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return null;
+  const atIndex = email.indexOf('@');
+  if (atIndex <= 0) return '***';
+  const user = email.slice(0, atIndex);
+  const domain = email.slice(atIndex + 1);
+  const visible = user.slice(0, Math.min(2, user.length));
+  return `${visible}***@${domain || '***'}`;
+}
+
+/**
  * Registers gateway-owned customer identity and session routes.
  * @param {HttpServer} server
  * @param {{
@@ -34,7 +49,8 @@ export function registerCustomerRoutes(server, ctx) {
 
   // Helper to set session cookie header
   function buildSessionCookie(token, maxAgeSeconds = 30 * 24 * 3600) {
-    return `youpi_session=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax`;
+    const isProd = process.env.NODE_ENV === 'production';
+    return `youpi_session=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${isProd ? '; Secure' : ''}`;
   }
 
   // Pending signup challenges cache: mobileNumber -> { otpCode, expiresAt, name, email }
@@ -42,6 +58,21 @@ export function registerCustomerRoutes(server, ctx) {
 
   // Throttles OTP dispatch per mobile number so the WhatsApp channel cannot be flooded/cost-abused.
   const otpRequestLog = new Map();
+
+  // Throttles check-user inquiries to prevent bulk mobile number scanning / user enumeration.
+  const checkUserRateMap = new Map();
+  const checkUserRateCleaner = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, timestamps] of checkUserRateMap) {
+      const active = Array.isArray(timestamps) ? timestamps.filter(t => now - t < 60000) : [];
+      if (active.length === 0) {
+        checkUserRateMap.delete(ip);
+      } else {
+        checkUserRateMap.set(ip, active);
+      }
+    }
+  }, 60000);
+  if (checkUserRateCleaner.unref) checkUserRateCleaner.unref();
 
   /**
    * Resolves the configured cooldown between consecutive OTP dispatches.
@@ -112,6 +143,20 @@ export function registerCustomerRoutes(server, ctx) {
       return;
     }
 
+    const ip = req.socket?.remoteAddress || '127.0.0.1';
+    const now = Date.now();
+    if (checkUserRateMap.size > 10000) {
+      checkUserRateMap.clear();
+    }
+    const timestamps = checkUserRateMap.get(ip) || [];
+    const recent = timestamps.filter(t => now - t < 60000);
+    if (recent.length >= 60) {
+      HttpServer.json(res, 429, { error: 'Too many requests. Please try again in a minute.' });
+      return;
+    }
+    recent.push(now);
+    checkUserRateMap.set(ip, recent);
+
     const existingUser = ctx.customerRepo.findByMobile(cleanMobile);
 
     HttpServer.json(res, 200, {
@@ -121,8 +166,8 @@ export function registerCustomerRoutes(server, ctx) {
       customer: existingUser ? {
         id: existingUser.id,
         name: existingUser.name,
-        email: existingUser.email,
-        mobileNumber: existingUser.mobileNumber
+        email: maskEmail(existingUser.email),
+        mobileNumber: cleanMobile
       } : null
     });
   });
@@ -156,18 +201,18 @@ export function registerCustomerRoutes(server, ctx) {
       return;
     }
 
-    // If new user signing up, validate name and email
+    // WhatsApp verifies identity; an email address is optional.
     if (!existingUser && isNewUser) {
       if (!name) {
         HttpServer.json(res, 400, { error: 'Full name is required for registration.' });
         return;
       }
-      if (!email || !isValidEmail(email)) {
-        HttpServer.json(res, 400, { error: 'A valid email address is required for registration.' });
+      if (email && !isValidEmail(email)) {
+        HttpServer.json(res, 400, { error: 'Please enter a valid email address or leave it blank.' });
         return;
       }
       // Check unique email
-      const existingByEmail = ctx.customerRepo.findByEmail(email);
+      const existingByEmail = email ? ctx.customerRepo.findByEmail(email) : null;
       if (existingByEmail) {
         HttpServer.json(res, 409, { error: 'An account with this email address already exists. Please log in.' });
         return;
@@ -192,29 +237,40 @@ export function registerCustomerRoutes(server, ctx) {
 
     // Dispatch via WhatsApp Berry Protocol
     const berry = getBerry();
-    let dispatchResult = { success: true, delivered: false, simulated: true };
+    let dispatchResult = { success: false, delivered: false };
     const displayName = existingUser?.name || name || '';
 
     if (berry) {
       try {
         dispatchResult = await berry.sendOtp(cleanMobile, otpCode, displayName);
       } catch (err) {
-        console.warn(`[CustomerAuth] WhatsApp dispatch notice: ${err.message}`);
+        console.warn('[CustomerAuth] WhatsApp OTP dispatch failed.');
       }
     } else {
-      console.log(`[CustomerAuth] Berry service not loaded; OTP for ${cleanMobile} was not delivered.`);
+      console.log('[CustomerAuth] WhatsApp service unavailable; OTP was not sent.');
     }
 
-    console.log(`[CustomerAuth] OTP generated for +91${cleanMobile} (expires in 5 mins)`);
+    const exposeDevOtp = process.env.YOUPI_EXPOSE_DEV_OTP === 'true' && process.env.NODE_ENV !== 'production';
+    const sent = dispatchResult?.success === true && dispatchResult?.delivered === true && dispatchResult?.simulated !== true;
+    if (!sent && !exposeDevOtp) {
+      pendingOtpChallenges.delete(cleanMobile);
+      if (existingUser) ctx.customerRepo.setOtp(cleanMobile, null, null);
+      HttpServer.json(res, 503, {
+        success: false,
+        code: 'OTP_DELIVERY_UNAVAILABLE',
+        error: 'WhatsApp verification is unavailable. Please ask the store to connect WhatsApp, then try again.'
+      });
+      return;
+    }
 
     HttpServer.json(res, 200, {
       success: true,
-      message: 'OTP sent to your WhatsApp number.',
+      message: sent ? 'OTP sent to your WhatsApp number.' : 'Development code generated; WhatsApp delivery was not used.',
       mobileNumber: cleanMobile,
       expiresInSeconds: 300,
       // Returning the OTP lets anyone log in as any number: only on explicit opt-in, never in production.
-      devOtp: (process.env.YOUPI_EXPOSE_DEV_OTP === 'true' && process.env.NODE_ENV !== 'production' ? otpCode : undefined),
-      dispatch: dispatchResult
+      devOtp: exposeDevOtp ? otpCode : undefined,
+      dispatch: { success: sent, delivered: sent }
     });
   });
 

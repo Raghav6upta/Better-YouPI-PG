@@ -29,17 +29,27 @@ export function buildUpiUri(options: BuildUpiUriOptions): string {
   }
 
   const amountStr = toRupeesString(options.amountPaise);
+  const currency = options.currency || 'INR';
+  if (currency !== 'INR') {
+    throw new Error('UPI payments require INR currency');
+  }
+  if (BigInt(options.amountPaise) <= 0n) {
+    throw new Error('UPI payment amount must be greater than zero');
+  }
 
   const params = new URLSearchParams();
   params.set('pa', options.payeeVpa.trim());
   params.set('pn', options.payeeName.trim());
   params.set('am', amountStr);
+  params.set('cu', currency);
   const txnId = (options.transactionRef || options.transactionNote || '').trim();
   if (txnId) {
     params.set('tn', txnId);
   }
 
-  return `upi://pay?${params.toString()}`;
+  // UPI is a URI, not an HTML form. Use percent-encoded spaces as in the
+  // documented app links; some app URI parsers do not decode form-style '+'.
+  return `upi://pay?${params.toString().replace(/\+/g, '%20')}`;
 }
 
 export interface BuildUpiIntentUriOptions extends BuildUpiUriOptions {

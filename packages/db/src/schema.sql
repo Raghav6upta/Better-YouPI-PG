@@ -134,6 +134,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_single_active_session_per_order
 CREATE UNIQUE INDEX IF NOT EXISTS idx_one_slot_per_receiving_account
   ON payment_sessions (receiving_account_id)
   WHERE status IN ('ACTIVE', 'PROCESSING') AND receiving_account_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_sessions_attributed_obs
+  ON payment_sessions (attributed_observation_id)
+  WHERE attributed_observation_id IS NOT NULL;
 
 -- 5. Payment Observations Table
 CREATE TABLE IF NOT EXISTS payment_observations (
@@ -154,6 +157,9 @@ CREATE TABLE IF NOT EXISTS payment_observations (
 
 CREATE INDEX IF NOT EXISTS idx_observations_match ON payment_observations (receiving_account_id, amount_paise, attribution_status);
 CREATE INDEX IF NOT EXISTS idx_observations_bank_ref ON payment_observations (bank_reference_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_observations_unique_attributed_bank_ref
+  ON payment_observations (bank_reference_number)
+  WHERE bank_reference_number IS NOT NULL AND attributed_payment_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_observations_fingerprint ON payment_observations (fingerprint_hash);
 CREATE INDEX IF NOT EXISTS idx_observations_attributed_payment ON payment_observations (attributed_payment_id);
 
@@ -257,4 +263,21 @@ CREATE INDEX IF NOT EXISTS idx_security_events_customer ON security_events (cust
 CREATE INDEX IF NOT EXISTS idx_security_events_session ON security_events (payment_session_id);
 CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events (event_type);
 
-
+-- Reference consumption and notification intent commit in the payment transaction.
+CREATE TABLE IF NOT EXISTS amazon_payment_receipts (
+    receiving_account_id TEXT NOT NULL REFERENCES payment_receiving_accounts(id),
+    utr TEXT NOT NULL,
+    amazon_reference_id TEXT NOT NULL,
+    observation_id TEXT NOT NULL REFERENCES payment_observations(id),
+    payment_id TEXT UNIQUE REFERENCES payment_sessions(id),
+    PRIMARY KEY (receiving_account_id, utr),
+    UNIQUE (receiving_account_id, amazon_reference_id)
+);
+CREATE TABLE IF NOT EXISTS payment_event_outbox (
+    id TEXT PRIMARY KEY,
+    payment_id TEXT NOT NULL REFERENCES payment_sessions(id),
+    event_type TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    dispatched_at TIMESTAMPTZ,
+    UNIQUE (payment_id, event_type)
+);

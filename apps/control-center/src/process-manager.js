@@ -3,6 +3,7 @@ import { fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -81,6 +82,25 @@ export class ProcessManager extends EventEmitter {
         pid: null
       }
     ];
+
+    let dashboardAmazon = false;
+    const databaseFile = path.resolve(rootDir, process.env.SQLITE_DB_PATH || 'data/youpi_pg.sqlite');
+    if (fs.existsSync(databaseFile)) {
+      let database;
+      try {
+        database = new DatabaseSync(databaseFile, { readOnly: true });
+        const row = database.prepare("SELECT branding FROM merchants ORDER BY CASE WHEN id = '00000000-0000-0000-0000-000000000001' THEN 0 ELSE 1 END, created_at ASC LIMIT 1").get();
+        dashboardAmazon = !!JSON.parse(row?.branding || '{}').amazonPayConfig;
+      } catch { /* An uninitialized database has no saved observer choice yet. */ }
+      finally { database?.close(); }
+    }
+    if (process.env.AMAZON_PAY_ENABLED === 'true' || dashboardAmazon) {
+      this.services = this.services.filter(service => !['gmail-observer', 'sms-observer'].includes(service.id));
+      if (!dashboardAmazon && process.env.AMAZON_PAY_DASHBOARD_MANAGED !== 'true') this.services.push({ id: 'amazon-pay-observer', name: 'Amazon Pay Observer',
+        script: path.join(rootDir, 'apps/amazon-pay-observer/src/index.js'),
+        port: Number(process.env.AMAZON_PAY_OBSERVER_PORT || 6004), healthPath: '/health',
+        child: null, status: 'STOPPED', startTime: null, pid: null });
+    }
 
     this.logs = []; // Circular buffer of log entries
     this.maxLogs = 500;

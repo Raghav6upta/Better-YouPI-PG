@@ -19,6 +19,8 @@ import {
   getUpiProviders,
   findUpiProviderByPackage,
   findUpiProviderById,
+  ALLOWED_NOTIFICATION_PACKAGES,
+  isAllowedNotificationPackage,
   calculateObservationFingerprint
 } from '../index.js';
 
@@ -115,12 +117,12 @@ describe('@youpi/common Unit Tests', () => {
       assert.equal(parsed.searchParams.get('am'), '200.00');
       assert.equal(parsed.searchParams.get('tn'), 'ORDER-99');
       assert.equal(parsed.searchParams.get('tr'), null);
-      // Verify no extra noisy parameters
-      assert.equal(parsed.searchParams.get('cu'), null);
-      assert.deepEqual([...parsed.searchParams.keys()], ['pa', 'pn', 'am', 'tn']);
+      assert.equal(parsed.searchParams.get('cu'), 'INR');
+      assert.ok(uri.includes('pn=Acme%20Store'));
+      assert.deepEqual([...parsed.searchParams.keys()], ['pa', 'pn', 'am', 'cu', 'tn']);
     });
 
-    test('strictly excludes cu, tr and all extra parameters even when currency option is passed', () => {
+    test('includes INR without fabricating merchant identifiers for personal receiving VPAs', () => {
       const uri = buildUpiUri({
         payeeVpa: '9876543210@axl',
         payeeName: 'Demo Store Merchant',
@@ -135,10 +137,35 @@ describe('@youpi/common Unit Tests', () => {
       assert.equal(parsed.searchParams.get('pn'), 'Demo Store Merchant');
       assert.equal(parsed.searchParams.get('am'), '1.00');
       assert.equal(parsed.searchParams.get('tn'), 'ORDER-123');
-      // Strictly verify NO cu, NO tr, NO extra parameters
-      assert.equal(parsed.searchParams.get('cu'), null);
+      assert.equal(parsed.searchParams.get('cu'), 'INR');
       assert.equal(parsed.searchParams.get('tr'), null);
-      assert.deepEqual([...parsed.searchParams.keys()], ['pa', 'pn', 'am', 'tn']);
+      assert.equal(parsed.searchParams.get('mc'), null);
+      assert.equal(parsed.searchParams.get('tid'), null);
+      assert.deepEqual([...parsed.searchParams.keys()], ['pa', 'pn', 'am', 'cu', 'tn']);
+    });
+
+    test('round-trips URI values without dropping the payee or interpreting literal plus signs as spaces', () => {
+      const uri = buildUpiUri({
+        payeeVpa: ' merchant.name@apl ',
+        payeeName: 'Store + Cafe & Sons',
+        amountPaise: 12345n,
+        transactionRef: 'ORDER+42 & 43'
+      });
+      const parsed = new URL(uri);
+      assert.equal(parsed.searchParams.get('pa'), 'merchant.name@apl');
+      assert.equal(parsed.searchParams.get('pn'), 'Store + Cafe & Sons');
+      assert.equal(parsed.searchParams.get('am'), '123.45');
+      assert.equal(parsed.searchParams.get('tn'), 'ORDER+42 & 43');
+      assert.ok(uri.includes('%2B'));
+      assert.ok(uri.includes('%20'));
+      assert.equal(uri.includes('+'), false);
+    });
+
+    test('rejects absent receiving addresses, unsupported currencies, and zero amounts', () => {
+      const options = { payeeVpa: 'store@upi', payeeName: 'Store', amountPaise: 100n, transactionRef: 'ORDER-1' };
+      assert.throws(() => buildUpiUri({ ...options, payeeVpa: '' }), /Invalid payee VPA/);
+      assert.throws(() => buildUpiUri({ ...options, currency: 'USD' }), /INR currency/);
+      assert.throws(() => buildUpiUri({ ...options, amountPaise: 0n }), /greater than zero/);
     });
 
     test('builds valid Android intent URI containing only canonical UPI parameters', () => {
@@ -155,12 +182,11 @@ describe('@youpi/common Unit Tests', () => {
       assert.ok(intentUri.includes('package=com.phonepe.app'));
       assert.ok(intentUri.includes('scheme=upi'));
       assert.ok(intentUri.endsWith('#Intent;scheme=upi;package=com.phonepe.app;end'));
-      // Underlying query payload inside intent must not have cu or tr
       const queryPart = intentUri.split('#')[0].replace('intent://pay?', '');
       const queryParams = new URLSearchParams(queryPart);
-      assert.equal(queryParams.get('cu'), null);
+      assert.equal(queryParams.get('cu'), 'INR');
       assert.equal(queryParams.get('tr'), null);
-      assert.deepEqual([...queryParams.keys()], ['pa', 'pn', 'am', 'tn']);
+      assert.deepEqual([...queryParams.keys()], ['pa', 'pn', 'am', 'cu', 'tn']);
     });
 
     test('validates 30 official UPI application provider registry', () => {
@@ -193,6 +219,27 @@ describe('@youpi/common Unit Tests', () => {
         assert.ok(!packages.has(p.packageName), `Duplicate package name: ${p.packageName}`);
         packages.add(p.packageName);
       }
+    });
+
+    test('validates unified ALLOWED_NOTIFICATION_PACKAGES and isAllowedNotificationPackage', () => {
+      assert.ok(Array.isArray(ALLOWED_NOTIFICATION_PACKAGES));
+      assert.ok(ALLOWED_NOTIFICATION_PACKAGES.length >= 38);
+
+      // Verify essential UPI and banking packages are included
+      assert.equal(isAllowedNotificationPackage('com.phonepe.app'), true);
+      assert.equal(isAllowedNotificationPackage('com.google.android.apps.nbu.paisa.user'), true);
+      assert.equal(isAllowedNotificationPackage('net.one97.paytm'), true);
+      assert.equal(isAllowedNotificationPackage('com.google.android.apps.messaging'), true);
+      assert.equal(isAllowedNotificationPackage('com.sbi.lotusintouch'), true);
+
+      // Case-insensitivity and trim handling
+      assert.equal(isAllowedNotificationPackage('  COM.PHONEPE.APP  '), true);
+
+      // Rejects spoofed or unlisted apps
+      assert.equal(isAllowedNotificationPackage('com.attacker.fake.app'), false);
+      assert.equal(isAllowedNotificationPackage(''), false);
+      assert.equal(isAllowedNotificationPackage(null), false);
+      assert.equal(isAllowedNotificationPackage(undefined), false);
     });
   });
 

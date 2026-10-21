@@ -45,6 +45,7 @@ export const SellingMode = Object.freeze({
  * Android observer layer is completely removed.
  */
 export const ObserverSource = Object.freeze({
+  AMAZON_PAY: 'AMAZON_PAY',
   GMAIL: 'GMAIL',
   GOOGLE_MESSAGES: 'GOOGLE_MESSAGES',
   ANDROID_OBSERVER: 'ANDROID_OBSERVER',

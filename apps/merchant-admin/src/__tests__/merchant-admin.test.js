@@ -50,7 +50,9 @@ describe('Merchant Admin Integration Tests', () => {
     assert.ok(res.text.includes('Active Slot (5-Minute Window)'));
     assert.ok(res.text.includes('Processing Slot (30s Verification Window)'));
     assert.ok(res.text.includes('Live Counter Payment Requests'));
-    assert.ok(res.text.includes('Payment Observers (SMS & Gmail)'));
+    assert.ok(res.text.includes('Payment Observers'));
+    assert.ok(res.text.includes('Amazon Pay UPI'));
+    assert.ok(res.text.includes('Sign in to Amazon'));
     assert.ok(res.text.includes('Android SMS Gateway'));
     assert.ok(res.text.includes('Gmail Direct API'));
   });

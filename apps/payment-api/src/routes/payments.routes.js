@@ -1,6 +1,6 @@
 import { HttpServer } from '../server.js';
-import { toPaise, toRupeesString, resolveRuntimeUrls, PaymentStatus } from '@youpi/common';
-import { isTerminalStatus, toPublicOutcome } from '@youpi/core';
+import { toPaise, toRupeesString, resolveRuntimeUrls, PaymentStatus, safeEqual } from '@youpi/common';
+import { isTerminalStatus, toPublicOutcome, verifyRegisteredDeviceCredentials } from '@youpi/core';
 import { isPaymentOwner } from '../auth-guard.js';
 
 /**
@@ -46,22 +46,59 @@ export function registerPaymentRoutes(server, ctx) {
       return;
     }
 
+    if (req.headers['x-merchant-key']) {
+      if (!merchant.webhookSecret || !safeEqual(req.headers['x-merchant-key'].trim(), merchant.webhookSecret)) {
+        HttpServer.json(res, 401, { error: 'Invalid merchant key', code: 'INVALID_MERCHANT_KEY' });
+        return;
+      }
+    }
+
     if (!body.orderId || !body.amount) {
       HttpServer.json(res, 400, { error: 'Missing required fields: orderId and amount.' });
       return;
     }
 
+    // returnUrl is echoed back to the customer's browser as a redirect target after
+    // payment, so only absolute http(s) URLs are ever stored. This is the write-side
+    // complement to the checkout page's sanitizeRedirectUrl.
+    if (body.returnUrl !== undefined && body.returnUrl !== null && body.returnUrl !== '') {
+      if (typeof body.returnUrl !== 'string') {
+        HttpServer.json(res, 400, { error: 'returnUrl must be a string.' });
+        return;
+      }
+      let parsedReturnUrl;
+      try {
+        parsedReturnUrl = new URL(body.returnUrl.trim());
+      } catch {
+        HttpServer.json(res, 400, { error: 'returnUrl must be an absolute http(s) URL.' });
+        return;
+      }
+      if (parsedReturnUrl.protocol !== 'http:' && parsedReturnUrl.protocol !== 'https:') {
+        HttpServer.json(res, 400, { error: 'returnUrl must use the http or https scheme.' });
+        return;
+      }
+      body.returnUrl = parsedReturnUrl.href;
+    }
+
     const deviceId = body.deviceId || req.headers['x-device-id'] || null;
-    if (deviceId && ctx.deviceRepo) {
-      let dev = ctx.deviceRepo.findById(deviceId);
-      if (!dev) {
-        try {
-          ctx.deviceRepo.create({
-            id: deviceId,
-            publicKey: `adhoc_${deviceId}`,
-            fingerprintHash: `fp_${deviceId}`
-          });
-        } catch {}
+    const deviceToken = body.deviceToken || req.headers['x-device-token'] || null;
+    const deviceSignature = body.deviceSignature || req.headers['x-device-signature'] || null;
+    const signaturePayload = body.signaturePayload || req.headers['x-device-payload'] || null;
+
+    if (deviceId) {
+      const credCheck = verifyRegisteredDeviceCredentials({
+        deviceId,
+        deviceToken,
+        deviceSignature,
+        signaturePayload,
+        deviceRepo: ctx.deviceRepo
+      });
+      if (!credCheck.valid) {
+        HttpServer.json(res, 401, {
+          error: credCheck.error || 'DEVICE_CREDENTIALS_INVALID',
+          message: credCheck.message || 'A registered device and valid device credential are required.'
+        });
+        return;
       }
     }
 
@@ -87,17 +124,26 @@ export function registerPaymentRoutes(server, ctx) {
       const isStale = (existing.status === PaymentStatus.ACTIVE && existing.expiresAt && existing.expiresAt.getTime() <= now) ||
         (existing.status === PaymentStatus.PROCESSING && existing.processingExpiresAt && existing.processingExpiresAt.getTime() <= now);
       if (isStale) {
-        ctx.sessionRepo.transitionToTerminal(existing.id, PaymentStatus.EXPIRED);
+        const terminalStatus = existing.status === PaymentStatus.PROCESSING ? PaymentStatus.FAILED : PaymentStatus.EXPIRED;
+        ctx.sessionRepo.transitionToTerminal(existing.id, terminalStatus);
         if (existing.receivingAccountId) {
           ctx.queueEngine.promoteNext(existing.receivingAccountId);
         }
-        existing.status = PaymentStatus.EXPIRED;
+        existing.status = terminalStatus;
+        if (ctx.eventEmitter) {
+          ctx.eventEmitter.emit(`PAYMENT.${terminalStatus}`, {
+            paymentId: existing.id,
+            orderId: existing.orderId,
+            merchantId: existing.merchantId,
+            amountPaise: existing.amountPaise
+          });
+        }
       }
 
       // If existing is non-terminal (ACTIVE, PROCESSING, QUEUED, INITIATED):
       if ([PaymentStatus.ACTIVE, PaymentStatus.PROCESSING, PaymentStatus.QUEUED, PaymentStatus.INITIATED].includes(existing.status)) {
-        // CASE 3: Active session + Different device -> DUPLICATE_SESSION_DETECTED
-        if (deviceId && existing.deviceId && deviceId !== existing.deviceId) {
+        // CASE 3: Active session bound to a device + missing or different device -> DUPLICATE_SESSION_DETECTED
+        if (existing.deviceId && (!deviceId || deviceId !== existing.deviceId)) {
           HttpServer.json(res, 409, {
             error: 'DUPLICATE_SESSION_DETECTED',
             code: 'DEVICE_SESSION_MISMATCH',
@@ -127,10 +173,9 @@ export function registerPaymentRoutes(server, ctx) {
         return;
       }
 
-      // CASE 4: Previous session is TERMINAL (FAILED, EXPIRED, CANCELLED) -> RETRY / NEW PAYMENT!
-      const cleanOrderId = body.orderId.replace(/-R\d+$/, '');
-      const randSuffix = Math.floor(1000 + Math.random() * 9000);
-      body.orderId = `${cleanOrderId}-R${randSuffix}`;
+      // CASE 4: Previous session is TERMINAL (FAILED, EXPIRED, CANCELLED) -> RETRY / NEW ATTEMPT!
+      // Invariant: Keep merchant's exact orderId untouched so webhooks, reconciliations, and reporting align.
+      body.orderId = body.orderId.replace(/-R\d+$/, '');
     }
 
     let amountPaise;
@@ -186,7 +231,7 @@ export function registerPaymentRoutes(server, ctx) {
     if (customerId && ctx.sessionRepo) {
       const activeForCust = ctx.sessionRepo.findActiveForCustomer ? ctx.sessionRepo.findActiveForCustomer(customerId) : null;
       if (activeForCust) {
-        if (deviceId && activeForCust.deviceId && deviceId !== activeForCust.deviceId) {
+        if (activeForCust.deviceId && (!deviceId || deviceId !== activeForCust.deviceId)) {
           HttpServer.json(res, 409, {
             error: 'DUPLICATE_SESSION_DETECTED',
             code: 'DEVICE_SESSION_MISMATCH',
@@ -323,11 +368,12 @@ export function registerPaymentRoutes(server, ctx) {
     if (owner && session.customerId && ctx.customerRepo) {
       const c = ctx.customerRepo.findById(session.customerId);
       if (c) {
+        const isOwner = isPaymentOwner(req, session, ctx);
         customer = {
           id: c.id,
           name: c.name,
-          email: c.email,
-          mobileNumber: c.mobileNumber
+          email: isOwner ? c.email : (c.email ? `${c.email.slice(0, 2)}***@${c.email.split('@')[1] || '***'}` : null),
+          mobileNumber: isOwner ? c.mobileNumber : (c.mobileNumber ? `${c.mobileNumber.slice(0, 2)}******${c.mobileNumber.slice(-2)}` : null)
         };
       }
     }
@@ -376,11 +422,12 @@ export function registerPaymentRoutes(server, ctx) {
     if (owner && session.customerId && ctx.customerRepo) {
       const c = ctx.customerRepo.findById(session.customerId);
       if (c) {
+        const isOwner = isPaymentOwner(req, session, ctx);
         customer = {
           id: c.id,
           name: c.name,
-          email: c.email,
-          mobileNumber: c.mobileNumber
+          email: isOwner ? c.email : (c.email ? `${c.email.slice(0, 2)}***@${c.email.split('@')[1] || '***'}` : null),
+          mobileNumber: isOwner ? c.mobileNumber : (c.mobileNumber ? `${c.mobileNumber.slice(0, 2)}******${c.mobileNumber.slice(-2)}` : null)
         };
       }
     }

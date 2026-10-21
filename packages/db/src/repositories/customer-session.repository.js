@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { blindIndex } from '@youpi/common';
+import { blindIndex, blindIndexCandidates } from '@youpi/common';
 
 /** Namespace so session-token and device-token digests can never collide. */
 const INDEX_NS = 'csess';
@@ -65,11 +65,11 @@ export class CustomerSessionRepository {
    * @returns {{ session: any, customer: any } | null}
    */
   findByToken(token) {
-    if (!token || typeof token !== 'string') return null;
+    if (!token || typeof token !== 'string' || token.startsWith('csess_v1_')) return null;
 
     const row = this.db.queryOne(
-      'SELECT * FROM customer_sessions WHERE token = ? AND is_active = 1',
-      [blindIndex(token, INDEX_NS)]
+      'SELECT * FROM customer_sessions WHERE token IN (?, ?) AND is_active = 1',
+      blindIndexCandidates(token, INDEX_NS)
     );
 
     // Rows written before index-only storage held the raw token.
@@ -88,6 +88,11 @@ export class CustomerSessionRepository {
     }
 
     if (!row) return null;
+
+    const currentIndex = blindIndex(token, INDEX_NS);
+    if (row.token !== currentIndex) {
+      this.db.execute('UPDATE customer_sessions SET token = ? WHERE id = ?', [currentIndex, row.id]);
+    }
 
     const expiresAt = new Date(row.expires_at);
     if (expiresAt.getTime() <= Date.now()) {
@@ -140,11 +145,11 @@ export class CustomerSessionRepository {
    * @returns {boolean}
    */
   revokeToken(token) {
-    if (!token) return false;
+    if (!token || typeof token !== 'string' || token.startsWith('csess_v1_')) return false;
     const now = new Date().toISOString();
     this.db.execute(
-      'UPDATE customer_sessions SET is_active = 0, updated_at = ? WHERE token = ?',
-      [now, blindIndex(token, INDEX_NS)]
+      'UPDATE customer_sessions SET is_active = 0, updated_at = ? WHERE token IN (?, ?)',
+      [now, ...blindIndexCandidates(token, INDEX_NS)]
     );
     // Also clear any legacy plaintext row so logout always revokes.
     this.db.execute(

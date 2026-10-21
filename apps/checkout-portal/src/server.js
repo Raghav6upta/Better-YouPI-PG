@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateQrSvg } from '@youpi/core';
-import { getInternalServiceToken } from '@youpi/common';
+import { getInternalServiceToken, isValidVpa } from '@youpi/common';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,20 +40,32 @@ export function frameAncestorOrigins(raw = process.env.CHECKOUT_FRAME_ANCESTORS)
 }
 
 /**
+ * True for production launches. scripts/start.js sets YOUPI_MODE/NODE_ENV to
+ * 'production'; the dev script and the test runner leave them on development/test.
+ */
+export function isProductionLike(env = process.env) {
+  return env.YOUPI_MODE === 'production' || env.NODE_ENV === 'production';
+}
+
+/**
  * Headers for the embeddable checkout page.
  *
- * The checkout page is embedded cross-origin by merchant storefronts, so the default is
- * permissive (`frame-ancestors *`). Deployments can pin the allowlist with
- * CHECKOUT_FRAME_ANCESTORS; when set, only those origins (plus the portal itself) may
- * frame the page. X-Frame-Options is dropped in that case because it cannot express a
- * list and would otherwise block the allowlisted storefronts.
+ * The checkout page is embedded cross-origin by merchant storefronts. An explicit
+ * CHECKOUT_FRAME_ANCESTORS always wins. Without one, production defaults to
+ * frame-ancestors 'self' so unknown sites cannot frame the page, while development
+ * stays permissive because the demo storefront (port 5000) embeds the portal
+ * (port 7000) across origins. X-Frame-Options is dropped when an allowlist is in
+ * effect because it cannot express a list and would block the allowlisted storefronts.
  */
-function checkoutFrameHeaders() {
-  const origins = frameAncestorOrigins();
+export function checkoutFrameHeaders(env = process.env) {
+  const configured = frameAncestorOrigins(env.CHECKOUT_FRAME_ANCESTORS);
+  const frameAncestors = configured.length
+    ? `'self' ${configured.join(' ')}`
+    : (isProductionLike(env) ? "'self'" : '*');
   return {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'strict-origin-when-cross-origin',
-    'Content-Security-Policy': `default-src 'self' data: blob:; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors ${origins.length ? `'self' ${origins.join(' ')}` : '*'}; base-uri 'none'; form-action 'self'; object-src 'none'`
+    'Content-Security-Policy': `default-src 'self' data: blob:; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors ${frameAncestors}; base-uri 'none'; form-action 'self'; object-src 'none'`
   };
 }
 
@@ -393,16 +405,49 @@ export class CheckoutServer {
       if (qrMatch) {
         const paymentId = qrMatch[1];
         const state = await this.fetchPaymentState(paymentId);
-        const upiUri = state?.upiUri || `upi://pay?pa=${encodeURIComponent(state?.payeeVpa || 'merchant@upi')}&pn=${encodeURIComponent(state?.merchantName || 'Store')}&am=${encodeURIComponent(state?.amount || '100.00')}&tn=${encodeURIComponent(paymentId)}`;
+        const qrHeaders = {
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+          'Pragma': 'no-cache',
+          'Expires': '0',
+          ...BASE_SECURITY_HEADERS
+        };
+        if (!state) {
+          res.writeHead(503, { 'Content-Type': 'application/json', ...qrHeaders });
+          res.end(JSON.stringify({ error: 'PAYMENT_STATE_UNAVAILABLE' }));
+          return;
+        }
+        // The API is the sole source of payment details for both QR and app links.
+        // Never invent a payee or amount when it is unreachable or the session is
+        // no longer payable: a plausible-looking fallback QR can send real money.
+        const expiresAt = Date.parse(state.expiresAt);
+        let upiUri = null;
+        try {
+          const parsed = new URL(state.upiUri);
+          if (parsed.protocol === 'upi:' && parsed.hostname === 'pay' &&
+              !parsed.username && !parsed.password && !parsed.port && !parsed.hash &&
+              (parsed.pathname === '' || parsed.pathname === '/') &&
+              isValidVpa(state.payeeVpa) &&
+              parsed.searchParams.getAll('pa').length === 1 &&
+              parsed.searchParams.getAll('am').length === 1 &&
+              parsed.searchParams.get('pa') === state.payeeVpa.trim() &&
+              parsed.searchParams.get('am') === state.amount &&
+              /^\d+\.\d{2}$/.test(state.amount) && BigInt(state.amount.replace('.', '')) > 0n) {
+            upiUri = state.upiUri;
+          }
+        } catch {}
+        if (state.status !== 'ACTIVE' || state.method !== 'UPI' ||
+            state.hasActiveSessionConflict || state.isBanned || state.fraudDetected ||
+            !Number.isFinite(expiresAt) || expiresAt <= Date.now() || !upiUri) {
+          res.writeHead(409, { 'Content-Type': 'application/json', ...qrHeaders });
+          res.end(JSON.stringify({ error: 'PAYMENT_QR_UNAVAILABLE' }));
+          return;
+        }
 
         const svg = generateQrSvg(upiUri, 220);
         res.writeHead(200, {
           'Content-Type': 'image/svg+xml',
-          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
-          'Pragma': 'no-cache',
-          'Expires': '0',
           'Access-Control-Allow-Origin': '*',
-          ...BASE_SECURITY_HEADERS
+          ...qrHeaders
         });
         res.end(svg);
         return;

@@ -55,7 +55,7 @@ This document establishes the mandatory architectural rules, Git workflows, secu
 
 ### 1. Payment Lifecycle Architecture
 
-YOUPI PG V2 is a self-hosted, sovereign payment gateway designed for zero-fee UPI and counter payments with automated banking observation (SMS & Gmail parsing).
+Better-YouPI-PG is an experimental fork of YOUPI PG V2. Its dashboard-managed workflow uses Amazon Pay receipt observation and WhatsApp customer OTPs. Legacy SMS/Gmail observation remains available outside Amazon mode. See `docs/AMAZON_PAY.md` for receipt-matching limits and `LICENSING.md` for licensing status.
 
 ```
   [ Merchant Website / App ]
@@ -70,7 +70,7 @@ YOUPI PG V2 is a self-hosted, sovereign payment gateway designed for zero-fee UP
               │
     (5) Customer pays via any UPI app (GPay, PhonePe, Paytm, CRED, BHIM)
               │
-    (6) Banking Observers detect SMS / Gmail credit notification
+    (6) Amazon Pay observer reads incoming UPI receipts (legacy: SMS / Gmail)
               │
     (7) Verification Engine verifies amount, UTR, and timestamps
               │
@@ -241,7 +241,7 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), (req, res) =
 
 1. **No Public Force-Success Endpoint**:
    - There is no endpoint that allows a client or developer to arbitrarily declare `SUCCESS`.
-   - `SUCCESS` is generated solely by the internal verification engine after matching a genuine bank SMS/Gmail observation.
+   - UPI `SUCCESS` is generated solely by the internal verification engine after matching validated observation evidence. Amazon mode requires Amazon receipt evidence; it does not silently fall back to SMS/Gmail. Receipt amount/time matching does not prove a unique merchant order identity.
 2. **Never Expose Secret API Keys in Frontend**:
    - Only publishable public keys (e.g., `data-youpi-key`) may appear in HTML/JS.
    - `webhookSecret`, database credentials, and observer tokens must remain strictly on the backend.
@@ -264,4 +264,5 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), (req, res) =
 | **Merchant Admin** | `6001` | Dashboard for slots, receiving VPAs, observers |
 | **SMS Observer** | `6002` | Android SMS banking webhook ingester |
 | **Gmail Observer** | `6003` | Push notification / Gmail observation ingester |
+| **Amazon Pay Observer** | `6004` | Dashboard-managed UPI receipt observer; authenticated loopback health |
 | **Process Control Center** | `8090` | Local process supervisor daemon |

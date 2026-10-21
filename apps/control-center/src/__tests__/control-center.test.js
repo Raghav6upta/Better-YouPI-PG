@@ -7,6 +7,25 @@ import { ProcessManager } from '../process-manager.js';
 
 const ADMIN_AUTH = { Authorization: `Bearer ${getAdminToken()}` };
 
+test('fresh dashboard-managed Amazon setup does not launch a competing browser or legacy observers', () => {
+  const saved = Object.fromEntries(['AMAZON_PAY_ENABLED', 'AMAZON_PAY_DASHBOARD_MANAGED', 'SQLITE_DB_PATH'].map(k => [k, process.env[k]]));
+  try {
+    process.env.AMAZON_PAY_ENABLED = 'true';
+    process.env.AMAZON_PAY_DASHBOARD_MANAGED = 'true';
+    process.env.SQLITE_DB_PATH = 'data/nonexistent-dashboard-setup-test.sqlite';
+    const ids = new ProcessManager().services.map(s => s.id);
+    assert.ok(ids.includes('payment-api'));
+    assert.ok(ids.includes('merchant-admin'));
+    assert.ok(!ids.includes('amazon-pay-observer'));
+    assert.ok(!ids.includes('gmail-observer'));
+    assert.ok(!ids.includes('sms-observer'));
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 describe('Control Center Supervisor Integration Tests', () => {
   let ccInstance;
   let baseUrl;
@@ -73,8 +92,8 @@ describe('Control Center Supervisor Integration Tests', () => {
     assert.equal(res.status, 200);
     assert.ok(res.headers['content-type'].includes('text/html'));
     assert.ok(res.body.includes('YOUPI Control Center'));
-    assert.ok(res.body.includes('Managed Host Processes (Zero Docker Dependency)'));
-    assert.ok(res.body.includes('Real-Time Aggregate Terminal Logs'));
+    assert.ok(res.body.includes('Managed host processes'));
+    assert.ok(res.body.includes('Live logs, all services'));
   });
 
   test('process control routes require the admin token', async () => {

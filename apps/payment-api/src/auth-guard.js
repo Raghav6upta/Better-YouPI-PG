@@ -31,6 +31,7 @@ function requiredLevel(method, pathname) {
     return 'admin';
   }
   if (method === 'POST' && pathname === '/api/v1/pollers/events') return 'observer';
+  if (method === 'GET' && pathname === '/api/v1/pollers/active-window' && process.env.AMAZON_PAY_ENABLED === 'true') return 'observer';
   // Injects a synthetic bank message into the real verification pipeline.
   if (method === 'POST' && /^\/api\/v1\/checkout\/[^/]+\/simulate-observation$/.test(pathname)) return 'admin';
   return null;

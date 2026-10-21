@@ -29,6 +29,7 @@ export class PaymentObserverClient {
     const url = `${this.apiBaseUrl}/api/v1/pollers/events`;
     const payload = {
       source: this.sourceName,
+      receiptText: data.receiptText,
       receivingAccountId: data.receivingAccountId,
       amountPaise: data.amountPaise !== undefined ? data.amountPaise.toString() : undefined,
       amount: data.amount,
@@ -43,6 +44,7 @@ export class PaymentObserverClient {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getObserverToken()}` },
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify(payload)
     });
 
@@ -52,6 +54,25 @@ export class PaymentObserverClient {
     }
 
     return await res.json();
+  }
+
+  /**
+   * Fetches active window sessions from payment core with observer bearer authentication.
+   * @returns {Promise<Array<any>>}
+   */
+  async getActiveWindow() {
+    const url = `${this.apiBaseUrl}/api/v1/pollers/active-window`;
+    try {
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${getObserverToken()}` },
+        signal: AbortSignal.timeout(3000)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data.sessions || [];
+      }
+    } catch {}
+    return [];
   }
 
   /**

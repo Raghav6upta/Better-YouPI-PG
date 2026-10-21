@@ -45,6 +45,8 @@ import { registerPaymentRoutes } from './routes/payments.routes.js';
 import { registerCheckoutRoutes } from './routes/checkout.routes.js';
 import { registerPollerRoutes } from './routes/pollers.routes.js';
 import { registerAdminRoutes } from './routes/admin.routes.js';
+import { registerAmazonPayRoutes } from './routes/amazon-pay.routes.js';
+import { AmazonPayService } from './services/amazon-pay.service.js';
 import { registerCustomerRoutes } from './routes/customer.routes.js';
 import { registerDeviceRoutes } from './routes/device.routes.js';
 import { getWhatsAppBerryService, WhatsAppBerryService } from './services/whatsapp-berry.service.js';
@@ -74,11 +76,28 @@ export function createPaymentApp(customDb = null, options = {}) {
 
   const eventEmitter = new EventEmitter();
 
+  // The active window and the processing window drive the slot expiry that is written to
+  // the database, so a malformed value must not reach it: a negative value would expire
+  // every session instantly and Infinity would throw a RangeError on toISOString().
+  const parseWindowMs = (raw, fallback, label) => {
+    if (raw === undefined || raw === null || String(raw).trim() === '') return fallback;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0 || value > 24 * 60 * 60 * 1000) {
+      console.warn(`[config] Ignoring invalid ${label}=${raw}; using ${fallback}ms.`);
+      return fallback;
+    }
+    return Math.floor(value);
+  };
+  const activeDurationMs = parseWindowMs(process.env.PAYMENT_ACTIVE_WINDOW_MS, 300000, 'PAYMENT_ACTIVE_WINDOW_MS');
+  const processingDurationMs = parseWindowMs(process.env.PAYMENT_PROCESSING_WINDOW_MS, 30000, 'PAYMENT_PROCESSING_WINDOW_MS');
+
   const queueEngine = new QueueEngine({
     sessionRepo,
     accountRepo,
     eventEmitter,
-    auditRepo
+    auditRepo,
+    activeDurationMs,
+    processingDurationMs
   });
 
   const timingEngine = new TimingEngine({
@@ -86,8 +105,8 @@ export function createPaymentApp(customDb = null, options = {}) {
     queueEngine,
     eventEmitter,
     auditRepo,
-    activeDurationMs: Number(process.env.PAYMENT_ACTIVE_WINDOW_MS || 300000),
-    processingDurationMs: Number(process.env.PAYMENT_PROCESSING_WINDOW_MS || 30000)
+    activeDurationMs,
+    processingDurationMs
   });
 
   const attributionEngine = new AttributionEngine({
@@ -104,7 +123,8 @@ export function createPaymentApp(customDb = null, options = {}) {
     accountRepo,
     queueEngine,
     timingEngine,
-    auditRepo
+    auditRepo,
+    eventEmitter
   });
 
   const webhookEngine = new WebhookEngine({
@@ -160,7 +180,9 @@ export function createPaymentApp(customDb = null, options = {}) {
         verificationTag: data.verificationTag || session.verificationTag,
         sources: data.sources || session.verificationSources
       });
-      webhookEngine.dispatch('SUCCESS', session).catch(() => {});
+      if (session.verificationSources?.includes('AMAZON_PAY')) {
+        webhookEngine.flushPendingEvents().catch(() => {});
+      } else webhookEngine.dispatch('SUCCESS', session).catch(() => {});
       handleSlotFreedAndPromote(session.receivingAccountId);
     }
   });
@@ -237,25 +259,35 @@ export function createPaymentApp(customDb = null, options = {}) {
 
       // Sweep expired ACTIVE sessions
       const expiredActive = db.query(`
-        SELECT id, receiving_account_id FROM payment_sessions
+        SELECT id, merchant_id, order_id, receiving_account_id FROM payment_sessions
         WHERE status = 'ACTIVE' AND expires_at <= ?
       `, [nowIso]);
 
       for (const row of expiredActive) {
         sessionRepo.transitionToTerminal(row.id, PaymentStatus.EXPIRED);
         server.broadcastSse(row.id, 'status_change', { status: PaymentStatus.EXPIRED });
+        eventEmitter.emit('PAYMENT.EXPIRED', {
+          paymentId: row.id,
+          orderId: row.order_id,
+          merchantId: row.merchant_id
+        });
         handleSlotFreedAndPromote(row.receiving_account_id);
       }
 
       // Sweep failed PROCESSING sessions
       const failedProc = db.query(`
-        SELECT id, receiving_account_id FROM payment_sessions
+        SELECT id, merchant_id, order_id, receiving_account_id FROM payment_sessions
         WHERE status = 'PROCESSING' AND processing_expires_at <= ?
       `, [nowIso]);
 
       for (const row of failedProc) {
         sessionRepo.transitionToTerminal(row.id, PaymentStatus.FAILED);
         server.broadcastSse(row.id, 'status_change', { status: PaymentStatus.FAILED });
+        eventEmitter.emit('PAYMENT.FAILED', {
+          paymentId: row.id,
+          orderId: row.order_id,
+          merchantId: row.merchant_id
+        });
         handleSlotFreedAndPromote(row.receiving_account_id);
       }
 
@@ -273,6 +305,7 @@ export function createPaymentApp(customDb = null, options = {}) {
 
   if (queueSyncDaemon.unref) queueSyncDaemon.unref();
 
+
   // Consolidated, Coordinated Observer Polling & Verification Daemon
   // Eliminates duplicate HTTP sweeps, enforces 1.5s-2s cooldown, and prevents SQLite write contention
   const observerPollerService = new ObserverPollerService({
@@ -286,6 +319,17 @@ export function createPaymentApp(customDb = null, options = {}) {
     smsPort: Number(process.env.SMS_OBSERVER_PORT || 6002),
     gmailPort: Number(process.env.GMAIL_OBSERVER_PORT || 6003)
   });
+
+  let deliveringWebhooks = false;
+  const deliverPendingWebhooks = async () => {
+    if (deliveringWebhooks) return;
+    deliveringWebhooks = true;
+    try { await webhookEngine.flushPendingEvents(); await webhookEngine.retryPending(); }
+    catch (error) { console.error('[Webhook recovery]', error.message); }
+    finally { deliveringWebhooks = false; }
+  };
+  const webhookRetryTimer = setInterval(deliverPendingWebhooks, Number(process.env.WEBHOOK_RETRY_INTERVAL_MS || 5000));
+  webhookRetryTimer.unref?.();
 
   // Execute crash recovery on boot
   const recoveryStats = recoveryEngine.recover();
@@ -343,16 +387,28 @@ export function createPaymentApp(customDb = null, options = {}) {
   registerCheckoutRoutes(server, context);
   registerPollerRoutes(server, context);
   registerAdminRoutes(server, context);
+  const amazonPayService = options.amazonPayService || new AmazonPayService({ merchantRepo, accountRepo, db });
+  context.amazonPayService = amazonPayService;
+  registerAmazonPayRoutes(server, amazonPayService);
+  if (!isCustom && amazonPayService.config?.autoStart) {
+    void amazonPayService.execute('start').catch(() => {});
+  }
   registerCustomerRoutes(server, context);
   registerDeviceRoutes(server, context);
 
   function destroy() {
+    const amazonClosed = amazonPayService.close();
+    clearInterval(webhookRetryTimer);
     clearInterval(queueSyncDaemon);
     observerPollerService.destroy();
     timingEngine.destroy();
     if (typeof attributionEngine.destroy === 'function') {
       attributionEngine.destroy();
     }
+    if (whatsappBerryService && typeof whatsappBerryService.disconnect === 'function') {
+      whatsappBerryService.disconnect({ cleanSession: false }).catch(() => {});
+    }
+    return amazonClosed;
   }
 
   return {
@@ -375,10 +431,10 @@ export function startServer(port = null, customDb = null) {
       resolve({
         app,
         port: finalPort,
-        close: () => new Promise(cb => {
-          app.destroy();
-          instance.close(cb);
-        })
+        close: async () => {
+          await app.destroy();
+          await new Promise(cb => instance.close(cb));
+        }
       });
     });
   });
@@ -386,5 +442,9 @@ export function startServer(port = null, customDb = null) {
 
 // Auto-run if executed directly as main script
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  startServer();
+  startServer().then(runtime => {
+    const shutdown = () => { void runtime.close().then(() => process.exit(0)); };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  });
 }

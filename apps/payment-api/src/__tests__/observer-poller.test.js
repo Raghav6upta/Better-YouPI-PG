@@ -186,3 +186,92 @@ describe('ObserverPollerService Hardening & Concurrency Protection', () => {
     assert.equal(eventEmitter.listenerCount('SESSION.PROCESSING'), listenerCountBefore - 1);
   });
 });
+
+describe('ObserverPollerService Amazon mode integration', () => {
+  let poller;
+  let originalFetch;
+  let originalAmazonEnabled;
+  let requests;
+  let observations;
+  let attributed;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    originalAmazonEnabled = process.env.AMAZON_PAY_ENABLED;
+    process.env.AMAZON_PAY_ENABLED = 'true';
+    requests = [];
+    observations = [];
+    attributed = [];
+    globalThis.fetch = async (url, options) => {
+      requests.push({ url: String(url), options });
+      return { ok: true };
+    };
+    poller = new ObserverPollerService({
+      db: { query: () => [{ id: 'session', receiving_account_id: 'account', status: 'ACTIVE' }] },
+      sessionRepo: {},
+      obsRepo: { findUnattributed: () => observations },
+      attributionEngine: { processObservation: observation => attributed.push(observation) },
+      eventEmitter: new EventEmitter(),
+      observerToken: 'fixture-observer-token',
+      amazonPort: 16004,
+      smsPort: 16002,
+      gmailPort: 16003,
+      autoStart: false
+    });
+    poller._isRunning = true;
+  });
+  afterEach(() => {
+    poller.destroy();
+    globalThis.fetch = originalFetch;
+    if (originalAmazonEnabled === undefined) delete process.env.AMAZON_PAY_ENABLED;
+    else process.env.AMAZON_PAY_ENABLED = originalAmazonEnabled;
+  });
+
+  test('Amazon mode sweeps only Amazon and does not attribute pending bank messages', async () => {
+    observations = [
+      { id: 'sms', source: 'SMS' },
+      { id: 'gmail', source: 'GMAIL' },
+      { id: 'amazon', source: 'AMAZON_PAY' }
+    ];
+    await poller.pollCycle();
+    assert.deepEqual(requests.map(request => request.url), ['http://127.0.0.1:16004/api/sweep']);
+    assert.equal(requests[0].options.headers.Authorization, 'Bearer fixture-observer-token');
+    assert.deepEqual(attributed.map(observation => observation.source), ['AMAZON_PAY']);
+    assert.equal(await poller.sweepSmsObserver(), false);
+    assert.equal(await poller.sweepGmailObserver(), false);
+    assert.equal(requests.length, 1);
+  });
+
+  test('Amazon sweep drops overlapping and cooldown requests', async () => {
+    let finish;
+    globalThis.fetch = async url => {
+      requests.push(String(url));
+      await new Promise(resolve => { finish = resolve; });
+      return { ok: true };
+    };
+    const first = poller.sweepAmazonObserver();
+    assert.equal(await poller.sweepAmazonObserver(), false);
+    finish();
+    assert.equal(await first, true);
+    assert.equal(await poller.sweepAmazonObserver(), false);
+    assert.equal(requests.length, 1);
+  });
+
+  test('paid Amazon sessions do not trigger dual-channel upgrade sweeps', async () => {
+    poller.db.query = () => [{ id: 'paid', receiving_account_id: 'account', status: 'SUCCESS' }];
+    await poller.pollCycle();
+    assert.equal(poller.isIdle, true);
+    assert.equal(requests.length, 0);
+  });
+
+  test('dashboard mode changes take effect without starting a second polling daemon', async () => {
+    process.env.AMAZON_PAY_ENABLED = 'false';
+    await poller.pollCycle();
+    assert.deepEqual(requests.map(request => request.url).sort(), [
+      'http://localhost:16002/api/sweep', 'http://localhost:16003/api/sweep'
+    ]);
+    process.env.AMAZON_PAY_ENABLED = 'true';
+    await poller.pollCycle();
+    assert.equal(requests.length, 3);
+    assert.equal(requests[2].url, 'http://127.0.0.1:16004/api/sweep');
+  });
+});

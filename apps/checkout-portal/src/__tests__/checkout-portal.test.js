@@ -48,7 +48,8 @@ describe('Checkout Portal Integration Tests', () => {
       const svg = generateQrSvg('upi://pay?pa=merchant@upi&am=500.00', 240);
       assert.ok(svg.startsWith('<svg'));
       assert.ok(svg.includes('xmlns="http://www.w3.org/2000/svg"'));
-      assert.ok(svg.includes('viewBox="0 0 240 240"'));
+      assert.ok(svg.includes('width="240" height="240"'));
+      assert.ok(svg.includes('viewBox="0 0 37 37"'));
       assert.ok(svg.endsWith('</svg>'));
     });
   });
@@ -78,6 +79,10 @@ describe('Checkout Portal Integration Tests', () => {
       assert.ok(res.text.includes('WhatsApp Mobile Number'));
       assert.ok(res.text.includes('id="authStepSignup"'));
       assert.ok(res.text.includes('id="authStepOtp"'));
+      // Partials already own these layout containers. Duplicating them collapses
+      // the desktop payment panel to zero width even though mobile still renders.
+      assert.equal((res.text.match(/class="ypg-wrapper"/g) || []).length, 1);
+      assert.equal((res.text.match(/class="ypg-body"/g) || []).length, 1);
 
       // INVARIANT: Zero UPI Offer artifacts
       assert.equal(res.text.includes('6 Offers'), false);
@@ -113,12 +118,10 @@ describe('Checkout Portal Integration Tests', () => {
       assert.deepEqual(frameAncestorOrigins('https://user:pass@x.test'), []);
     });
 
-    test('GET /checkout/:id/qr.svg returns dynamic SVG image', async () => {
+    test('GET /checkout/:id/qr.svg refuses to invent payment details for an unknown session', async () => {
       const res = await get('/checkout/pay_test_uuid_12345/qr.svg');
-      assert.equal(res.status, 200);
-      assert.ok(res.headers['content-type'].includes('image/svg+xml'));
-      assert.ok(res.text.includes('<svg'));
-      assert.ok(res.text.includes('</svg>'));
+      assert.equal(res.status, 503);
+      assert.equal(JSON.parse(res.text).error, 'PAYMENT_STATE_UNAVAILABLE');
     });
 
     test('GET /icons/:filename returns official Play Store icons with correct MIME type', async () => {
@@ -172,16 +175,29 @@ describe('Checkout Portal Integration Tests', () => {
       assert.equal(res.text.includes('id="drawerVpa"'), false);
     });
 
-    test('GET /css/checkout.css and /js/checkout.js return static modular assets with CORS', async () => {
+    test('GET /css/checkout.css returns the static stylesheet with CORS', async () => {
       const resCss = await get('/css/checkout.css');
       assert.equal(resCss.status, 200);
       assert.ok(resCss.headers['content-type'].includes('text/css'));
       assert.ok(resCss.text.includes('.ypg-wrapper'));
+    });
 
-      const resJs = await get('/js/checkout.js');
-      assert.equal(resJs.status, 200);
-      assert.ok(resJs.headers['content-type'].includes('application/javascript'));
-      assert.ok(resJs.text.includes('STORAGE_KEY_IDENTITY'));
+    test('the checkout page loads exactly one copy of the client script', async () => {
+      const res = await get('/checkout/pay_test_uuid_12345');
+      assert.equal(res.status, 200);
+
+      // The client script lives inline, in the rendered page. A second copy
+      // used to be loaded from /js/checkout.js, and two classic scripts that
+      // both declare `let state` at global scope are a syntax error: the
+      // second one never runs, and the page throws "Identifier 'state' has
+      // already been declared" on every single load.
+      assert.equal(res.text.includes('/js/checkout.js'), false);
+      assert.equal(res.text.includes('src="/js/'), false);
+
+      // The live copy is the inline one, and it is the hardened one — the
+      // redirect and postMessage guards live here.
+      assert.ok(res.text.includes('STORAGE_KEY_IDENTITY'));
+      assert.ok(res.text.includes('sanitizeRedirectUrl'));
     });
   });
 });

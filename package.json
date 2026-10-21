@@ -9,6 +9,13 @@
     "apps/*"
   ],
   "scripts": {
+    "postinstall": "node scripts/patch-whatsapp-logging.js",
+    "security:patch-whatsapp": "node scripts/patch-whatsapp-logging.js",
+    "amazon:login": "node --env-file-if-exists=.env.amazon-local apps/amazon-pay-observer/src/index.js --login",
+    "amazon:observe": "node --env-file-if-exists=.env.amazon-local apps/amazon-pay-observer/src/index.js",
+    "amazon:trial": "node --env-file=.env.amazon-local scripts/amazon-local-trial.js",
+    "test:amazon": "node --test --test-concurrency=1 packages/core/src/__tests__/amazon-pay.test.js apps/amazon-pay-observer/src/__tests__/observer.test.js apps/amazon-pay-observer/src/__tests__/browser.test.js apps/payment-api/src/__tests__/amazon-pay-admin.test.js apps/payment-api/src/__tests__/amazon-pay-admin.browser.test.js",
+    "test:whatsapp": "node --test --test-concurrency=1 apps/payment-api/src/__tests__/whatsapp-berry-auth.test.js apps/payment-api/src/__tests__/whatsapp-setup.browser.test.js",
     "build": "tsc -b",
     "clean": "node scripts/clean.js",
     "db:setup": "node scripts/init-db.cjs",
@@ -17,13 +24,17 @@
     "start:prod": "node scripts/start.js",
     "start:prod:api": "node apps/payment-api/src/index.js",
     "dev": "node scripts/dev.js",
+    "dev:amazon": "node --env-file-if-exists=.env.amazon-local scripts/dev.js",
     "test": "node scripts/test-all.js",
     "test:all": "node scripts/test-all.js",
     "test:acceptance": "node --test scripts/production-infrastructure.test.js",
+    "build:android:apk": "node scripts/build-android-apk.js",
+    "sync:android-allowlist": "node scripts/sync-android-allowlist.js",
     "typecheck": "tsc -b --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "jsqr": "^1.4.0",
     "typescript": "^7.0.2"
   },
   "engines": {

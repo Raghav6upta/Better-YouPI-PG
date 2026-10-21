@@ -468,7 +468,7 @@ test('Full 53-Point Customer Identity, Authentication & Payment Invariant Matrix
       transactionRef: 'REG-UPI-44',
       currency: 'INR'
     });
-    assert.equal(upiUri, 'upi://pay?pa=novastore%40hdfcbank&pn=Nova+Commerce+India&am=50.00&tn=REG-UPI-44');
+    assert.equal(upiUri, 'upi://pay?pa=novastore%40hdfcbank&pn=Nova%20Commerce%20India&am=50.00&cu=INR&tn=REG-UPI-44');
     const qrSvg = generateQrSvg(upiUri, 220);
     assert.ok(qrSvg.includes('<svg') && qrSvg.includes('</svg>'));
 
@@ -485,7 +485,7 @@ test('Full 53-Point Customer Identity, Authentication & Payment Invariant Matrix
     });
     assert.ok(intent.startsWith('intent://pay?'));
     assert.ok(intent.includes('package=' + gpay.packageName));
-    assert.equal(intent.includes('cu='), false);
+    assert.equal(intent.includes('cu=INR'), true);
 
     // 46. Existing merchant/non-merchant UPI behavior works
     const nonMerchantAccount = accountRepo.create({

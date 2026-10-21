@@ -178,20 +178,26 @@ export function registerAdminRoutes(server, ctx) {
     });
 
     // Query live Google Messages browser automator status
-    let smsStatus = { status: 'STANDBY', isPaired: false, messagesObserved: 0 };
+    let smsStatus = { status: 'STANDBY', isPaired: false, messagesObserved: 0, isRunning: false };
     try {
       const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-      const smsRes = await fetch(`http://localhost:${smsPort}/api/browser/status`, { signal: AbortSignal.timeout(1500) });
+      const smsRes = await fetch(`http://localhost:${smsPort}/api/browser/status`, {
+        headers: { Authorization: `Bearer ${getObserverToken()}` },
+        signal: AbortSignal.timeout(1500)
+      });
       if (smsRes.ok) {
         smsStatus = await smsRes.json();
       }
     } catch {}
 
     // Query live Gmail browser automator status
-    let gmailStatus = { status: 'STANDBY', isLoggedIn: false, emailsObserved: 0 };
+    let gmailStatus = { status: 'STANDBY', isLoggedIn: false, emailsObserved: 0, isRunning: false };
     try {
       const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-      const gmailRes = await fetch(`http://localhost:${gmailPort}/api/browser/status`, { signal: AbortSignal.timeout(1500) });
+      const gmailRes = await fetch(`http://localhost:${gmailPort}/api/browser/status`, {
+        headers: { Authorization: `Bearer ${getObserverToken()}` },
+        signal: AbortSignal.timeout(1500)
+      });
       if (gmailRes.ok) {
         gmailStatus = await gmailRes.json();
       }
@@ -201,6 +207,7 @@ export function registerAdminRoutes(server, ctx) {
       gmail: {
         status: gmailStatus.status || (gmailStatus.isLoggedIn ? 'CONNECTED' : 'STANDBY'),
         isLoggedIn: Boolean(gmailStatus.isLoggedIn),
+        isRunning: Boolean(gmailStatus.isRunning || gmailStatus.isLoggedIn || gmailStatus.status === 'CONNECTED'),
         emailsObserved: gmailStatus.emailsObserved || 0,
         lastCheckedAt: gmailStatus.lastCheckedAt || null
       },
@@ -211,6 +218,7 @@ export function registerAdminRoutes(server, ctx) {
       sms: {
         status: smsStatus.status || (smsStatus.isPaired ? 'CONNECTED' : 'STANDBY'),
         isPaired: Boolean(smsStatus.isPaired),
+        isRunning: Boolean(smsStatus.isRunning || smsStatus.isPaired || smsStatus.status === 'CONNECTED'),
         messagesObserved: smsStatus.messagesObserved || 0,
         lastSeenAt: smsStatus.lastSeenAt || null
       }
@@ -1154,6 +1162,7 @@ export function registerAdminRoutes(server, ctx) {
       platform: info.platform,
       sessionId: info.sessionId,
       isConnected: info.isConnected,
+      error: info.error || null,
       qrCode: qrPayload || qr?.dataUrl || qr?.raw || (typeof qr === 'string' ? qr : null),
       pairingCode: info.pairingCode || null,
       pairingPhone: info.pairingPhone || null
@@ -1237,7 +1246,7 @@ export function registerAdminRoutes(server, ctx) {
     }
   });
 
-  // POST /api/v1/admin/whatsapp/pairing-code - Request 8-digit Pairing Code via Phone Number (bypasses QR rate limit)
+  // POST /api/v1/admin/whatsapp/pairing-code - Request a device-linking code instead of scanning a QR
   server.post('/api/v1/admin/whatsapp/pairing-code', async (req, res) => {
     const berry = ctx.whatsappBerryService;
     if (!berry) {

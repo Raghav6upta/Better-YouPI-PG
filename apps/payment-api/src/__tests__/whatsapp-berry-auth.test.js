@@ -1,21 +1,103 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+
 import { createPaymentApp } from '../index.js';
 import { Database } from '@youpi/db';
 import { authFetch } from '../../../../scripts/test-support.js';
+import { formatQrDataUrl } from '../services/whatsapp-berry.service.js';
+
+test('WhatsApp QR preserves the exact SDK payload', async () => {
+  const raw = '2@reference,public-key,identity-key,secret';
+  let encoded;
+  const qr = await formatQrDataUrl(raw, { toDataURL: async value => {
+    encoded = value;
+    return 'data:image/png;base64,fixture';
+  } });
+  assert.equal(encoded, raw);
+  assert.match(qr, /^data:image/);
+});
+
+test('checkout requires real WhatsApp dispatch and supports signup without email', async t => {
+  const previous = process.env.YOUPI_EXPOSE_DEV_OTP;
+  process.env.YOUPI_EXPOSE_DEV_OTP = 'false';
+  const db = new Database({ inMemory: true });
+  let dispatch = { success: false, delivered: false };
+  const issued = new Map();
+  const berry = { sendOtp: async (phone, otp) => {
+    issued.set(phone, otp);
+    if (dispatch instanceof Error) throw dispatch;
+    return dispatch;
+  } };
+  const app = createPaymentApp(db, { whatsappBerryService: berry });
+  await new Promise(resolve => app.rawServer.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${app.rawServer.address().port}/api/v1/customer`;
+  const post = (route, body) => fetch(`${base}/${route}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  t.after(async () => {
+    await app.destroy(); app.rawServer.closeAllConnections();
+    await new Promise(resolve => app.rawServer.close(resolve)); db.close();
+    if (previous === undefined) delete process.env.YOUPI_EXPOSE_DEV_OTP;
+    else process.env.YOUPI_EXPOSE_DEV_OTP = previous;
+  });
+  for (const [i, outcome] of [
+    { success: false, delivered: false },
+    { success: true, delivered: true, simulated: true },
+    new Error('Connection closed')
+  ].entries()) {
+    dispatch = outcome;
+    const mobileNumber = `987654320${i}`;
+    const response = await post('send-otp', { mobileNumber, name: 'Test Customer', isNewUser: true });
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    assert.equal(body.code, 'OTP_DELIVERY_UNAVAILABLE');
+    assert.equal(body.devOtp, undefined);
+    assert.equal((await post('verify-otp', { mobileNumber, otp: issued.get(mobileNumber) })).status, 400);
+  }
+  dispatch = { success: true, delivered: true };
+  const mobileNumber = '9876543219';
+  const sent = await post('send-otp', { mobileNumber, name: 'WhatsApp Customer', isNewUser: true });
+  assert.equal(sent.status, 200);
+  assert.equal((await sent.json()).devOtp, undefined);
+  const verified = await post('verify-otp', { mobileNumber, otp: issued.get(mobileNumber) });
+  assert.equal(verified.status, 200);
+  assert.ok((await verified.json()).token);
+
+  // A failed delivery must also invalidate an existing customer's challenge.
+  const future = Date.now() + 31_000;
+  t.mock.method(Date, 'now', () => future);
+  dispatch = { success: false, delivered: false };
+  assert.equal((await post('send-otp', { mobileNumber })).status, 503);
+  assert.equal((await post('verify-otp', { mobileNumber, otp: issued.get(mobileNumber) })).status, 400);
+});
 
 test('WhatsApp Berry Protocol OTP Customer Auth & Merchant Configuration Suite', async (t) => {
   const customDb = new Database({ inMemory: true });
-  const app = createPaymentApp(customDb, { otpCooldownMs: 0 });
+  // Exercise HTTP/auth behavior without starting a real WhatsApp client or pairing a phone.
+  let berryStatus = 'DISCONNECTED';
+  const berry = {
+    getStatus: () => berryStatus,
+    getClientInfo: () => ({ status: berryStatus, platform: 'BerryProtocol v0.1.10', isConnected: false }),
+    getQrCode: () => berryStatus === 'DISCONNECTED' ? null : { dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+' },
+    initialize: async () => { berryStatus = 'AWAITING_SCAN'; },
+    reconnect: async () => { berryStatus = 'AWAITING_SCAN'; },
+    requestPairingCode: async phoneNumber => ({ pairingCode: '12345678', phoneNumber }),
+    disconnect: async () => { berryStatus = 'DISCONNECTED'; },
+    sendOtp: async () => ({ success: true, delivered: false, simulated: true })
+  };
+  const app = createPaymentApp(customDb, { whatsappBerryService: berry });
   const testPort = 6288;
 
   const serverInstance = await new Promise(resolve => {
     const s = app.rawServer.listen(testPort, () => resolve(s));
   });
 
-  t.after(() => {
+  t.after(async () => {
     app.destroy();
-    serverInstance.close();
+    await new Promise(resolve => serverInstance.close(resolve));
+    customDb.close();
   });
 
   const apiBase = `http://localhost:${testPort}`;
@@ -120,7 +202,17 @@ test('WhatsApp Berry Protocol OTP Customer Auth & Merchant Configuration Suite',
 
   let loginOtp = null;
 
-  await t.test('7. POST /api/v1/customer/send-otp dispatches WhatsApp OTP for existing user', async () => {
+  await t.test('resending an OTP during the cooldown is rejected', async () => {
+    const res = await authFetch(`${apiBase}/api/v1/customer/send-otp`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mobileNumber: '9123456789' })
+    });
+    assert.equal(res.status, 429);
+  });
+
+  await t.test('7. POST /api/v1/customer/send-otp dispatches WhatsApp OTP for existing user', async (t) => {
+    const afterCooldown = Date.now() + 31_000;
+    t.mock.method(Date, 'now', () => afterCooldown);
     const res = await authFetch(`${apiBase}/api/v1/customer/send-otp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
