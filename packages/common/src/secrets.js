@@ -257,13 +257,17 @@ export function blindIndex(value, namespace = 'token') {
  */
 export function blindIndexMatches(value, storedIndex, namespace = 'token') {
   if (!value || !storedIndex) return false;
-  const candidate = blindIndex(value, namespace);
-  if (candidate && safeEqual(candidate, storedIndex)) return true;
+  return blindIndexCandidates(value, namespace).some(candidate => safeEqual(candidate, storedIndex));
+}
+
+/** Lookup candidates for migration only. New writes always use blindIndex(). */
+export function blindIndexCandidates(value, namespace = 'token') {
+  if (value === null || value === undefined || value === '') return [];
   // Legacy index produced with the previous key.
   const legacy = crypto.createHmac('sha256', getInternalServiceToken())
     .update(`${namespace}:${value}`)
     .digest('hex');
-  return safeEqual(`${namespace}_v1_${legacy}`, storedIndex);
+  return [blindIndex(value, namespace), `${namespace}_v1_${legacy}`];
 }
 
 /** True when the request's `Authorization: Bearer` value matches any of the given tokens. */

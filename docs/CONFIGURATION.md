@@ -95,3 +95,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 Never commit production `.env` files to source code repositories.
+
+Back up `data/.secrets/` with your database and retain the same keys when upgrading.
+Customer sessions and device tokens indexed with the older internal-service key
+are migrated to `BLIND_INDEX_KEY` when their original bearer token is used. Logout
+also revokes older indexed sessions. Stored indexes are never accepted as bearer
+credentials. Do not delete the old internal-service key during this migration.

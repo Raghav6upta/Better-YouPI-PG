@@ -1,17 +1,20 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import {
   Database,
   runMigrations,
   MerchantRepository,
   ReceivingAccountRepository,
   CustomerRepository,
+  CustomerSessionRepository,
+  DeviceRepository,
   PaymentSessionRepository,
   ObservationRepository,
   SupportTicketRepository,
   AuditLogRepository
 } from '../index.js';
-import { PaymentStatus, ObserverSource, SenderType, TicketStatus } from '@youpi/common';
+import { PaymentStatus, ObserverSource, SenderType, TicketStatus, blindIndex, getInternalServiceToken } from '@youpi/common';
 
 describe('@youpi/db Unit & Integration Tests', () => {
   let db;
@@ -43,6 +46,51 @@ describe('@youpi/db Unit & Integration Tests', () => {
 
   afterEach(() => {
     db.close();
+  });
+
+  test('customer sessions survive the indexing-key upgrade without accepting stored digests as tokens', () => {
+    const customer = customerRepo.create({ fullName: 'Upgrade Test', phoneNumber: '9876543210' });
+    const sessions = new CustomerSessionRepository(db, customerRepo);
+    const legacyIndex = token => 'csess_v1_' + crypto.createHmac('sha256', getInternalServiceToken())
+      .update(`csess:${token}`).digest('hex');
+    for (const format of ['old-key', 'plaintext', 'current']) {
+      const session = sessions.create({ customerId: customer.id });
+      const stored = format === 'old-key' ? legacyIndex(session.token)
+        : format === 'plaintext' ? session.token : blindIndex(session.token, 'csess');
+      db.execute('UPDATE customer_sessions SET token = ? WHERE id = ?', [stored, session.id]);
+      if (format !== 'plaintext') assert.equal(sessions.findByToken(stored), null);
+      assert.equal(sessions.findByToken(session.token)?.session.id, session.id);
+      assert.equal(db.queryOne('SELECT token FROM customer_sessions WHERE id = ?', [session.id]).token, blindIndex(session.token, 'csess'));
+      sessions.revokeToken(session.token);
+      assert.equal(sessions.findByToken(session.token), null);
+    }
+    const logout = sessions.create({ customerId: customer.id });
+    db.execute('UPDATE customer_sessions SET token = ? WHERE id = ?', [legacyIndex(logout.token), logout.id]);
+    sessions.revokeToken(logout.token);
+    assert.equal(sessions.findByToken(logout.token), null, 'logout revokes an old index before migration');
+    const expired = sessions.create({ customerId: customer.id, ttlHours: -1 });
+    db.execute('UPDATE customer_sessions SET token = ? WHERE id = ?', [legacyIndex(expired.token), expired.id]);
+    assert.equal(sessions.findByToken(expired.token), null, 'migration must not revive an expired session');
+  });
+
+  test('device tokens migrate old indexes and reject database digests as bearer credentials', () => {
+    const devices = new DeviceRepository(db);
+    for (const lookup of ['verifyToken', 'findByToken']) {
+      const token = `devtok_${crypto.randomBytes(32).toString('hex')}`;
+      const device = devices.create({ publicKey: 'upgrade-' + lookup, fingerprintHash: lookup, deviceToken: token });
+      const stored = 'devtok_v1_' + crypto.createHmac('sha256', getInternalServiceToken())
+        .update(`devtok:${token}`).digest('hex');
+      db.execute('UPDATE devices SET device_token = ? WHERE id = ?', [stored, device.id]);
+      assert.equal(devices.verifyToken(device.id, stored), false);
+      assert.equal(devices.findByToken(stored), null);
+      if (lookup === 'verifyToken') assert.equal(devices.verifyToken(device.id, token), true);
+      else assert.equal(devices.findByToken(token)?.id, device.id);
+      assert.equal(db.queryOne('SELECT device_token FROM devices WHERE id = ?', [device.id]).device_token, blindIndex(token, 'devtok'));
+      assert.equal(devices.verifyToken(device.id, blindIndex(token, 'devtok')), false);
+      const rotated = devices.rotateToken(device.id);
+      assert.equal(devices.verifyToken(device.id, token), false);
+      assert.equal(devices.findByToken(rotated)?.id, device.id);
+    }
   });
 
   test('migrations seed default merchant and active UPI receiving account', () => {

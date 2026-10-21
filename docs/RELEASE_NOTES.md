@@ -42,6 +42,7 @@ This is an experimental beta, not production certification. See the same-amount 
 - Preserved Amazon Pay receipt verification, its durable webhook outbox, WhatsApp OTP setup, and the mobile UPI button that uses the exact QR URI.
 - Kept a single webhook recovery sweep. Adapted upstream's retry test to wait for the persisted HTTP result, since this fork saves deliveries before sending them.
 - Synchronized the browser-served SDK with the package so relative storefront return URLs and explicit iframe origins work in both integrations.
+- Added upgrade coverage for existing customer/device token indexes: migrate on use, revoke old sessions on logout, and reject attempts to replay a stored digest as a bearer token.
 - Verified 44 regression suites, 22 Amazon tests, 17 WhatsApp tests, typecheck, and mobile/desktop browser checks. The dependency audit reported no production vulnerabilities. Browser checks verify the QR payload and protocol navigation request; opening a real phone payment app still requires a device acceptance test.
 
 ## 21 October 2026 update
