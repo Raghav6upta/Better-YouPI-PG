@@ -3,6 +3,7 @@
 - Integrated reviewed changes through upstream `d7b0741`, using a squash import to exclude a committed WhatsApp runtime metadata file and its history.
 - Added upstream order amount/currency reuse validation, merchant key support, timestamped webhook signatures, header-authenticated dashboard streams, CI checks and optional MCP diagnostics.
 - Preserved Amazon Pay verification, its durable webhook outbox, WhatsApp OTP setup, mobile UPI links and the existing customer/device token migration.
+- Replaced upstream plain SHA-256 API-key storage with salted PBKDF2 after CodeQL flagged it; webhook-secret compatibility and independent key rotation remain supported.
 - Kept stable outbox delivery IDs in signed payloads and retries; completed checkout hooks require customer or merchant authentication.
 - Included the MCP workspace manifest in Docker dependency installation. Amazon browser use in the Alpine container remains unvalidated; use the documented host setup.
 

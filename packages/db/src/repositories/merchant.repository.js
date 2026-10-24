@@ -1,9 +1,20 @@
 import crypto from 'node:crypto';
 import { encryptAtRest, decryptAtRest, safeEqual } from '@youpi/common';
 
-/** Computes a deterministic SHA-256 hex digest for storing and verifying merchant API keys. */
+/** Salted, deliberately expensive hashing for merchant-supplied API keys. */
 export function hashApiKey(rawKey) {
-  return crypto.createHash('sha256').update(String(rawKey)).digest('hex');
+  if (typeof rawKey !== 'string' || !rawKey.trim() || rawKey.length > 1024) throw new Error('Invalid merchant API key.');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(rawKey.trim(), salt, 210000, 64, 'sha512').toString('hex');
+  return `pbkdf2-sha512-v1:${salt}:${hash}`;
+}
+
+function verifyApiKeyHash(rawKey, stored) {
+  if (typeof stored !== 'string') return false;
+  const match = /^pbkdf2-sha512-v1:([0-9a-f]{32}):([0-9a-f]{128})$/.exec(stored);
+  if (!match) return false;
+  const digest = crypto.pbkdf2Sync(rawKey, match[1], 210000, 64, 'sha512');
+  return crypto.timingSafeEqual(digest, Buffer.from(match[2], 'hex'));
 }
 
 /** Gmail OAuth credentials are nested inside `branding.gmailConfig`; encrypt just those. */
@@ -56,7 +67,7 @@ export class MerchantRepository {
       : (data.branding || '{"primaryColor":"#2563eb","appName":"YOUPI PG","logoUrl":null}');
     const now = new Date().toISOString();
     const rawWebhookSecret = data.webhookSecret || crypto.randomBytes(32).toString('hex');
-    const apiKeyHash = data.apiKeyHash || (data.apiKey ? hashApiKey(data.apiKey) : hashApiKey(rawWebhookSecret));
+    const apiKeyHash = data.apiKeyHash || (data.apiKey ? hashApiKey(data.apiKey) : null);
 
     const sql = `
       INSERT INTO merchants (id, business_name, slug, contact_email, contact_phone, webhook_url, webhook_secret, api_key_hash, branding, created_at, updated_at)
@@ -131,10 +142,6 @@ export class MerchantRepository {
     if (updates.webhookSecret !== undefined) {
       fields.push('webhook_secret = ?');
       params.push(encryptAtRest(updates.webhookSecret));
-      if (updates.apiKey === undefined && updates.apiKeyHash === undefined) {
-        fields.push('api_key_hash = ?');
-        params.push(hashApiKey(updates.webhookSecret));
-      }
     }
     if (updates.apiKey !== undefined) {
       fields.push('api_key_hash = ?');
@@ -160,14 +167,14 @@ export class MerchantRepository {
   }
 
   /**
-   * Verifies a candidate merchant API key against the merchant's stored SHA-256 apiKeyHash
+   * Verifies a candidate merchant API key against the merchant's salted PBKDF2 apiKeyHash
    * (or webhookSecret for backward compatibility) in constant time.
    */
   verifyApiKey(merchant, candidateKey) {
     if (!merchant || !candidateKey || typeof candidateKey !== 'string') return false;
     const clean = candidateKey.trim();
-    if (!clean) return false;
-    if (merchant.apiKeyHash && safeEqual(hashApiKey(clean), merchant.apiKeyHash)) {
+    if (!clean || clean.length > 1024) return false;
+    if (merchant.apiKeyHash && verifyApiKeyHash(clean, merchant.apiKeyHash)) {
       return true;
     }
     if (merchant.webhookSecret && safeEqual(clean, merchant.webhookSecret)) {

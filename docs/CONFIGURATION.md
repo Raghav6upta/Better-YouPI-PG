@@ -133,3 +133,10 @@ secret. Other merchant IDs require a merchant key or signed order token.
 Keep keys server-side and create or validate the expected order amount on your
 server: the default-merchant public endpoint is not proof of a storefront price.
 The optional MCP tools are diagnostic only and do not settle payments.
+
+Dedicated merchant API keys use randomly salted PBKDF2-SHA512 (210,000 iterations).
+Existing webhook-secret authentication remains compatible. Rotating the webhook
+secret does not erase a separately configured API key. If migrating from an
+upstream build that stored a dedicated API key as plain SHA-256, reissue that key;
+those weak hashes are not accepted. The previous Better-YouPI-PG release did not
+use that dedicated-key format.
