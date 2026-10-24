@@ -93,6 +93,29 @@ describe('@youpi/db Unit & Integration Tests', () => {
     }
   });
 
+  test('merchant API keys use unique salts and survive independent webhook-key rotation', () => {
+    const key = 'merchant-fixture-api-key';
+    const one = merchantRepo.create({businessName:'Key A',slug:'key-a',contactEmail:'a@example.com',contactPhone:'9876543210',apiKey:key});
+    const two = merchantRepo.create({businessName:'Key B',slug:'key-b',contactEmail:'b@example.com',contactPhone:'9876543210',apiKey:key});
+    assert.match(one.apiKeyHash, /^pbkdf2-sha512-v1:/);
+    assert.notEqual(one.apiKeyHash, two.apiKeyHash);
+    assert.equal(merchantRepo.verifyApiKey(one, key), true);
+    assert.equal(merchantRepo.verifyApiKey(one, 'incorrect'), false);
+    assert.equal(merchantRepo.verifyApiKey(one, one.apiKeyHash), false);
+    const rotated = merchantRepo.update(one.id, {webhookSecret:'new-webhook-fixture-secret'});
+    assert.equal(rotated.apiKeyHash, one.apiKeyHash);
+    assert.equal(merchantRepo.verifyApiKey(rotated, key), true);
+    assert.equal(merchantRepo.verifyApiKey(rotated, one.webhookSecret), false);
+    assert.equal(merchantRepo.verifyApiKey(rotated, rotated.webhookSecret), true);
+    for (const apiKeyHash of ['broken', 'a'.repeat(64), 'pbkdf2-sha512-v1:bad:bad']) {
+      assert.equal(merchantRepo.verifyApiKey({...one, apiKeyHash}, key), false);
+    }
+    const changed = merchantRepo.update(one.id, {apiKey:'replacement-fixture-api-key'});
+    assert.equal(merchantRepo.verifyApiKey(changed, key), false);
+    assert.equal(merchantRepo.verifyApiKey(changed, 'replacement-fixture-api-key'), true);
+    assert.equal(merchantRepo.verifyApiKey(testMerchant, testMerchant.webhookSecret), true);
+  });
+
   test('migrations seed default merchant and active UPI receiving account', () => {
     assert.ok(testMerchant);
     assert.equal(testMerchant.slug, 'demo-store');

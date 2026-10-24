@@ -17,6 +17,7 @@
 | `SQLITE_DB_PATH` | `./data/youpi_pg.sqlite`| Path to local SQLite database file |
 | `ENCRYPTION_MASTER_KEY` | `64-hex chars` | 256-bit key for encrypting OAuth credentials and device keys |
 | `JWT_SECRET` | `32+ chars` | Secret key for customer and admin session tokens |
+| `ALLOW_TEST_AUTOACTIVATE` | unset | Local test-only override allowing payment auto-activation; keep unset in production. Admin-authenticated requests and `NODE_ENV=test` are already allowed |
 | `PAYMENT_ACTIVE_WINDOW_MS` | `300000` | Duration of active payment slot (5 minutes = 300,000ms) |
 | `PAYMENT_PROCESSING_WINDOW_MS` | `30000` | Duration of verification slot (30 seconds = 30,000ms) |
 | `LATE_OBSERVATION_WINDOW_MS` | `1800000` | Safety window for matching late observations (30 minutes) |
@@ -64,6 +65,19 @@ prove which merchant it is. There are three accepted credentials:
 Affected routes: `GET /api/v1/payments/:id`, `GET /api/v1/payments/:id/cod`,
 `GET /api/v1/orders/:orderId/cod` and `GET /api/v1/checkout/:id/state`.
 
+### On `POST /api/v1/payments`
+
+`X-Merchant-Key` is **optional** here, and the request is refused with
+`401 MISSING_MERCHANT_KEY` only when it names a merchant other than the gateway's
+default one. The public one-script integration (the browser SDK) cannot carry a
+merchant secret — a secret in browser JavaScript is public — so the default-merchant
+path has to stay open. Use `X-Merchant-Key` (or `X-Order-Token`) whenever a request
+targets a specific tenant, and reuse an `orderId` only with the same amount: a
+mismatch is rejected with `409 ORDER_AMOUNT_MISMATCH`.
+
+`autoActivate: true` is restricted to admin-authenticated requests or to
+`NODE_ENV=test`; elsewhere it is refused with `403 AUTOACTIVATE_FORBIDDEN`.
+
 **Without a credential these routes return a redacted public view** — status, amount,
 currency, method and order id only. Customer name, email and phone number are never
 disclosed to an anonymous caller that merely holds a payment id.
@@ -101,3 +115,28 @@ Customer sessions and device tokens indexed with the older internal-service key
 are migrated to `BLIND_INDEX_KEY` when their original bearer token is used. Logout
 also revokes older indexed sessions. Stored indexes are never accepted as bearer
 credentials. Do not delete the old internal-service key during this migration.
+
+
+## Webhook compatibility after the October upstream update
+
+`X-Gateway-Signature` continues to sign the raw body. New deliveries additionally
+include `deliveryId` and `timestamp` in that signed JSON, and
+`X-Gateway-Signature-V2` signs `<timestamp>.<rawBody>` using the webhook secret.
+Retries preserve the original body, delivery ID and timestamp. The merchant SDK
+uses a two-hour freshness window by default to cover retries; deduplicate by
+signed delivery ID and verify the expected order amount and payment method.
+The Amazon outbox uses its stable event ID for both the stored delivery and
+signed payload, including after restart recovery.
+
+Existing default-merchant browser integrations still work without publishing a
+secret. Other merchant IDs require a merchant key or signed order token.
+Keep keys server-side and create or validate the expected order amount on your
+server: the default-merchant public endpoint is not proof of a storefront price.
+The optional MCP tools are diagnostic only and do not settle payments.
+
+Dedicated merchant API keys use randomly salted PBKDF2-SHA512 (210,000 iterations).
+Existing webhook-secret authentication remains compatible. Rotating the webhook
+secret does not erase a separately configured API key. If migrating from an
+upstream build that stored a dedicated API key as plain SHA-256, reissue that key;
+those weak hashes are not accepted. The previous Better-YouPI-PG release did not
+use that dedicated-key format.

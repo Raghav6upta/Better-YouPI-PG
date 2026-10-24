@@ -1,5 +1,21 @@
 import crypto from 'node:crypto';
-import { encryptAtRest, decryptAtRest } from '@youpi/common';
+import { encryptAtRest, decryptAtRest, safeEqual } from '@youpi/common';
+
+/** Salted, deliberately expensive hashing for merchant-supplied API keys. */
+export function hashApiKey(rawKey) {
+  if (typeof rawKey !== 'string' || !rawKey.trim() || rawKey.length > 1024) throw new Error('Invalid merchant API key.');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(rawKey.trim(), salt, 210000, 64, 'sha512').toString('hex');
+  return `pbkdf2-sha512-v1:${salt}:${hash}`;
+}
+
+function verifyApiKeyHash(rawKey, stored) {
+  if (typeof stored !== 'string') return false;
+  const match = /^pbkdf2-sha512-v1:([0-9a-f]{32}):([0-9a-f]{128})$/.exec(stored);
+  if (!match) return false;
+  const digest = crypto.pbkdf2Sync(rawKey, match[1], 210000, 64, 'sha512');
+  return crypto.timingSafeEqual(digest, Buffer.from(match[2], 'hex'));
+}
 
 /** Gmail OAuth credentials are nested inside `branding.gmailConfig`; encrypt just those. */
 const GMAIL_SECRET_FIELDS = ['clientSecret', 'refreshToken', 'apiKey'];
@@ -50,10 +66,12 @@ export class MerchantRepository {
       ? serializeBranding(data.branding)
       : (data.branding || '{"primaryColor":"#2563eb","appName":"YOUPI PG","logoUrl":null}');
     const now = new Date().toISOString();
+    const rawWebhookSecret = data.webhookSecret || crypto.randomBytes(32).toString('hex');
+    const apiKeyHash = data.apiKeyHash || (data.apiKey ? hashApiKey(data.apiKey) : null);
 
     const sql = `
-      INSERT INTO merchants (id, business_name, slug, contact_email, contact_phone, webhook_url, webhook_secret, branding, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO merchants (id, business_name, slug, contact_email, contact_phone, webhook_url, webhook_secret, api_key_hash, branding, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     this.db.execute(sql, [
@@ -64,7 +82,8 @@ export class MerchantRepository {
       data.contactPhone,
       data.webhookUrl || null,
       // Webhook HMAC key must be recoverable at signing time, so it is encrypted at rest.
-      encryptAtRest(data.webhookSecret || crypto.randomBytes(32).toString('hex')),
+      encryptAtRest(rawWebhookSecret),
+      apiKeyHash,
       branding,
       now,
       now
@@ -124,6 +143,13 @@ export class MerchantRepository {
       fields.push('webhook_secret = ?');
       params.push(encryptAtRest(updates.webhookSecret));
     }
+    if (updates.apiKey !== undefined) {
+      fields.push('api_key_hash = ?');
+      params.push(hashApiKey(updates.apiKey));
+    } else if (updates.apiKeyHash !== undefined) {
+      fields.push('api_key_hash = ?');
+      params.push(updates.apiKeyHash);
+    }
     if (updates.branding !== undefined) {
       fields.push('branding = ?');
       params.push(typeof updates.branding === 'object' ? serializeBranding(updates.branding) : updates.branding);
@@ -140,6 +166,23 @@ export class MerchantRepository {
     return this.findById(id);
   }
 
+  /**
+   * Verifies a candidate merchant API key against the merchant's salted PBKDF2 apiKeyHash
+   * (or webhookSecret for backward compatibility) in constant time.
+   */
+  verifyApiKey(merchant, candidateKey) {
+    if (!merchant || !candidateKey || typeof candidateKey !== 'string') return false;
+    const clean = candidateKey.trim();
+    if (!clean || clean.length > 1024) return false;
+    if (merchant.apiKeyHash && verifyApiKeyHash(clean, merchant.apiKeyHash)) {
+      return true;
+    }
+    if (merchant.webhookSecret && safeEqual(clean, merchant.webhookSecret)) {
+      return true;
+    }
+    return false;
+  }
+
   mapRow(row) {
     return {
       id: row.id,
@@ -150,6 +193,7 @@ export class MerchantRepository {
       webhookUrl: row.webhook_url,
       // Plaintext rows written before encryption existed decrypt to themselves.
       webhookSecret: decryptAtRest(row.webhook_secret),
+      apiKeyHash: row.api_key_hash || null,
       branding: deserializeBranding(row.branding),
       createdAt: new Date(row.created_at),
       updatedAt: new Date(row.updated_at)

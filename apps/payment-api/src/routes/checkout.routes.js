@@ -1,8 +1,8 @@
 import { HttpServer } from '../server.js';
-import { toRupeesString, buildUpiUri, PaymentStatus, PaymentMethod, UPI_PROVIDERS, isInternalServiceRequest, isValidTransition } from '@youpi/common';
+import { toRupeesString, buildUpiUri, PaymentStatus, PaymentMethod, UPI_PROVIDERS, isInternalServiceRequest, isValidTransition, getObserverToken } from '@youpi/common';
 import { validateSessionDeviceAccess, verifyRegisteredDeviceCredentials } from '@youpi/core';
-import { getObserverToken, getAmazonPayConfig } from '@youpi/common';
-import { isPaymentOwner } from '../auth-guard.js';
+import { getAmazonPayConfig } from '@youpi/common';
+import { isAdminRequest, isPaymentOwner } from '../auth-guard.js';
 
 /**
  * Validates device access to an active payment session.
@@ -16,9 +16,9 @@ function checkSessionDeviceAccess(session, req, body = null, ctx = null) {
     return { allowed: true, boundDeviceId: session.deviceId, isTerminal: true };
   }
 
-  // Only a co-located service on loopback holding the shared internal token may bypass device blocking.
+  // Only a co-located service on loopback holding the shared internal token (or an admin) may bypass device blocking.
   // The `X-Internal-Render` flag on its own is attacker-controlled and proves nothing.
-  if (isInternalServiceRequest(req)) {
+  if (isInternalServiceRequest(req) || isAdminRequest(req)) {
     return { allowed: true, boundDeviceId: session.deviceId };
   }
 
@@ -254,7 +254,10 @@ async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFF
   if (!smsHealthy) {
     try {
       const smsPort = Number(process.env.SMS_OBSERVER_PORT || 6002);
-      const res = await fetch(`http://127.0.0.1:${smsPort}/api/browser/status`, { signal: AbortSignal.timeout(800) });
+      const res = await fetch(`http://127.0.0.1:${smsPort}/api/browser/status`, {
+          headers: { 'Authorization': `Bearer ${getObserverToken()}` },
+          signal: AbortSignal.timeout(800)
+        });
       if (res.ok) {
         const data = await res.json();
         const isRecent = data.lastSeenAt && (Date.now() - new Date(data.lastSeenAt).getTime() < 300000);
@@ -289,7 +292,10 @@ async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFF
 
       if (!pollerActive) {
         try {
-          const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, { signal: AbortSignal.timeout(800) });
+          const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, {
+          headers: { 'Authorization': `Bearer ${getObserverToken()}` },
+          signal: AbortSignal.timeout(800)
+        });
           if (res.ok) {
             const data = await res.json();
             if (data.isLoggedIn || data.status === 'CONNECTED' || data.isPolling) {
@@ -321,7 +327,10 @@ async function checkUpiServerHealth(ctx, enabledMethods = [], sellingMode = 'OFF
       // Check if browser-based Gmail automator is actively logged in
       try {
         const gmailPort = Number(process.env.GMAIL_OBSERVER_PORT || 6003);
-        const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, { signal: AbortSignal.timeout(800) });
+        const res = await fetch(`http://127.0.0.1:${gmailPort}/api/browser/status`, {
+          headers: { 'Authorization': `Bearer ${getObserverToken()}` },
+          signal: AbortSignal.timeout(800)
+        });
         if (res.ok) {
           const data = await res.json();
           if (data.isLoggedIn === true && data.status === 'CONNECTED') {
@@ -728,19 +737,28 @@ export function registerCheckoutRoutes(server, ctx) {
 
     // Require a valid customer session token; never accept a bare client-asserted customerId!
     if (!token || typeof token !== 'string' || !ctx.customerSessionRepo) {
-      HttpServer.json(res, 401, { error: 'A valid customer session token is required to bind a customer identity.' });
+      HttpServer.json(res, 401, {
+        error: 'A valid customer session token is required to bind a customer identity.',
+        code: 'CUSTOMER_SESSION_REQUIRED'
+      });
       return;
     }
 
     const authContext = ctx.customerSessionRepo.findByToken(token.trim());
     if (!authContext || !authContext.customer) {
-      HttpServer.json(res, 401, { error: 'Invalid or expired customer session token.' });
+      HttpServer.json(res, 401, {
+        error: 'Invalid or expired customer session token.',
+        code: 'CUSTOMER_SESSION_REQUIRED'
+      });
       return;
     }
 
     const customer = authContext.customer;
     if (customerId && customerId !== customer.id) {
-      HttpServer.json(res, 401, { error: 'Customer ID does not match authenticated session token.' });
+      HttpServer.json(res, 401, {
+        error: 'Customer ID does not match authenticated session token.',
+        code: 'CUSTOMER_SESSION_MISMATCH'
+      });
       return;
     }
 
@@ -1566,6 +1584,34 @@ export function registerCheckoutRoutes(server, ctx) {
     const session = ctx.sessionRepo.findById(params.id);
     if (!session) {
       HttpServer.json(res, 404, { error: `Payment session not found: ${params.id}` });
+      return;
+    }
+
+    const deviceAccess = checkSessionDeviceAccess(session, req, body, ctx);
+    if (!deviceAccess.allowed) {
+      HttpServer.json(res, deviceAccess.statusCode || 409, deviceAccess.body);
+      return;
+    }
+
+    const token = body.token ||
+      body.sessionToken ||
+      req.headers['x-customer-token'] ||
+      ((req.headers['authorization'] || '').startsWith('Bearer ') ? req.headers['authorization'].slice(7).trim() : null);
+    const authContext = (token && typeof token === 'string' && ctx.customerSessionRepo)
+      ? ctx.customerSessionRepo.findByToken(token.trim())
+      : null;
+
+    const hasValidCustomerToken = Boolean(
+      authContext?.customer && (!session.customerId || authContext.customer.id === session.customerId)
+    );
+    const hasVerifiedDevice = !deviceAccess.isTerminal && Boolean(deviceAccess.boundDeviceId);
+    const hasOwnerAuth = isPaymentOwner(req, session, ctx);
+
+    if (!hasValidCustomerToken && !hasVerifiedDevice && !hasOwnerAuth) {
+      HttpServer.json(res, 401, {
+        error: 'A valid customer session token or bound device credential is required to trigger checkout hooks.',
+        code: 'CUSTOMER_SESSION_REQUIRED'
+      });
       return;
     }
 
