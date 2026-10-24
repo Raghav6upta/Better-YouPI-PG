@@ -654,4 +654,129 @@ describe('Gateway Hardening & Invariant Protection Test Suite (#23, #25, #26, #2
     assert.equal(authRes.body.customer.name, 'Vikram Malhotra');
     assert.equal(authRes.body.customer.email, 'vikram.malhotra@testmail.com');
   });
+
+  test('Issue #63 & #69: POST /api/v1/payments rejects requests without merchant key, accepts hashed API key, and restricts autoActivate', async () => {
+    const merchantRepo = new MerchantRepository(testDb);
+    const merchantId = '00000000-0000-0000-0000-000000000001';
+    const dedicatedApiKey = 'mk_live_dedicated_merchant_api_key_6369';
+    merchantRepo.update(merchantId, { apiKey: dedicatedApiKey });
+
+    // 1. Completely unauthenticated request naming the DEFAULT merchant -> allowed.
+    //    The public one-script integration (the browser SDK) cannot carry a merchant
+    //    secret, so this path has to stay open for the gateway's own merchant.
+    const url = new URL('/api/v1/payments', baseUrl);
+    const unauthRes = await new Promise((resolve, reject) => {
+      const req = http.request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-merchant-id': merchantId }
+      }, (res) => {
+        let data = '';
+        res.on('data', c => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      });
+      req.on('error', reject);
+      req.write(JSON.stringify({ orderId: `UNAUTH-${Date.now()}`, amount: '100.00' }));
+      req.end();
+    });
+    assert.equal(unauthRes.status, 201);
+
+    // 1b. An unauthenticated request naming a DIFFERENT merchant -> 401, so an anonymous
+    //     caller still cannot inject sessions into another tenant.
+    const otherMerchant = merchantRepo.create({
+      businessName: 'Other Tenant',
+      slug: 'other-tenant',
+      contactEmail: 'other@example.com',
+      contactPhone: '9876543210'
+    });
+    const crossTenantRes = await new Promise((resolve, reject) => {
+      const req = http.request(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-merchant-id': otherMerchant.id }
+      }, (res) => {
+        let data = '';
+        res.on('data', c => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      });
+      req.on('error', reject);
+      req.write(JSON.stringify({ orderId: `XTENANT-${Date.now()}`, amount: '100.00' }));
+      req.end();
+    });
+    assert.equal(crossTenantRes.status, 401);
+    assert.equal(crossTenantRes.body.code, 'MISSING_MERCHANT_KEY');
+
+    // 2. Request with valid dedicated API key (verified against api_key_hash) -> 201
+    const orderId = `KEY-OK-${Date.now()}`;
+    const keyRes = await new Promise((resolve, reject) => {
+      const req = http.request(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-merchant-id': merchantId,
+          'x-merchant-key': dedicatedApiKey
+        }
+      }, (res) => {
+        let data = '';
+        res.on('data', c => { data += c; });
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+      });
+      req.on('error', reject);
+      req.write(JSON.stringify({ orderId, amount: '250.00', currency: 'INR' }));
+      req.end();
+    });
+    assert.equal(keyRes.status, 201);
+    assert.equal(keyRes.body.orderId, orderId);
+
+    // 3. Reusing the same orderId with a different amount -> 409 ORDER_AMOUNT_MISMATCH
+    const mismatchRes = await request('/api/v1/payments', {
+      method: 'POST',
+      headers: { 'x-merchant-id': merchantId, 'x-merchant-key': dedicatedApiKey },
+      body: { orderId, amount: '1.00', currency: 'INR' }
+    });
+    assert.equal(mismatchRes.status, 409);
+    assert.equal(mismatchRes.body.code, 'ORDER_AMOUNT_MISMATCH');
+
+    // 4. In production mode, non-admin caller with autoActivate: true -> 403 AUTOACTIVATE_FORBIDDEN
+    const prevEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const prodAutoRes = await new Promise((resolve, reject) => {
+        const req = http.request(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-merchant-id': merchantId,
+            'x-merchant-key': dedicatedApiKey
+          }
+        }, (res) => {
+          let data = '';
+          res.on('data', c => { data += c; });
+          res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(data) }));
+        });
+        req.on('error', reject);
+        req.write(JSON.stringify({ orderId: `PROD-AUTO-${Date.now()}`, amount: '100.00', autoActivate: true }));
+        req.end();
+      });
+      assert.equal(prodAutoRes.status, 403);
+      assert.equal(prodAutoRes.body.code, 'AUTOACTIVATE_FORBIDDEN');
+    } finally {
+      process.env.NODE_ENV = prevEnv;
+    }
+  });
+  test('terminal checkout hooks cannot use a stored device binding as authentication', async () => {
+    const { DeviceRepository } = await import('@youpi/db');
+    const device = new DeviceRepository(testDb).create({ publicKey: 'terminal-hook-fixture', fingerprintHash: 'terminal-hook-fixture' });
+    const session = new PaymentSessionRepository(testDb).create({
+      merchantId: '00000000-0000-0000-0000-000000000001', orderId: 'TERMINAL-HOOK-AUTH',
+      amountPaise: 100n, deviceId: device.id, status: PaymentStatus.SUCCESS
+    });
+    const url = `/api/v1/checkout/${session.id}/trigger-hook`;
+    const anonymous = await request(url, { method: 'POST', body: { action: 'test' } });
+    assert.equal(anonymous.status, 401);
+    assert.equal(anonymous.body.code, 'CUSTOMER_SESSION_REQUIRED');
+    const forged = await request(url, { method: 'POST', headers: { 'x-device-id': device.id, 'x-device-token': 'forged' }, body: { action: 'test' } });
+    assert.equal(forged.status, 401);
+    const owner = await request(url, { method: 'POST', headers: authHeadersFor('/api/v1/admin/health'), body: { action: 'test' } });
+    assert.equal(owner.status, 200);
+  });
+
 });

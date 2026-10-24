@@ -93,8 +93,14 @@ export class WebhookEngine {
       } catch {}
     }
 
+    const deliveryId = options.deliveryId || crypto.randomUUID();
+    const timestampNum = Date.now();
+    const timestamp = timestampNum.toString();
+
     const payloadObj = {
       event: publicOutcome,
+      deliveryId,
+      timestamp: timestampNum,
       paymentId: session.id,
       orderId: session.orderId,
       attemptId: session.attemptId || session.id,
@@ -111,13 +117,13 @@ export class WebhookEngine {
 
     const payloadString = JSON.stringify(payloadObj);
     const signature = generateHmac(payloadString, merchant.webhookSecret);
-    const deliveryId = options.deliveryId || crypto.randomUUID();
-    const timestamp = Date.now().toString();
+    const timestampedSignature = generateHmac(`${timestamp}.${payloadString}`, merchant.webhookSecret);
 
     const headers = {
       'Content-Type': 'application/json',
       'X-Gateway-Event': publicOutcome,
       'X-Gateway-Signature': `sha256=${signature}`,
+      'X-Gateway-Signature-V2': `sha256=${timestampedSignature}`,
       'X-Gateway-Delivery-Id': deliveryId,
       'X-Gateway-Timestamp': timestamp
     };
@@ -242,12 +248,25 @@ export class WebhookEngine {
         continue;
       }
 
-      const timestamp = Date.now().toString();
-      // The signature must cover exactly the transmitted body, using the same formula as
-      // dispatch(). Signing `${timestamp}.${payload}` here meant a retried delivery carried a
-      // different MAC than the first attempt, so the merchant's verification (HMAC over the
-      // raw body, per the documented contract) rejected every retry.
+      // The retry resends the ORIGINAL body byte for byte, so the headers must describe
+      // that same body. Recomputing a fresh timestamp here would make the header disagree
+      // with the timestamp embedded in the payload, and the merchant's verification (which
+      // cross-checks the two) would reject every retry.
+      let storedTimestamp = null;
+      let storedDeliveryId = item.id;
+      try {
+        const storedPayload = JSON.parse(item.payload);
+        if (storedPayload && storedPayload.timestamp !== undefined && storedPayload.timestamp !== null) {
+          storedTimestamp = String(storedPayload.timestamp);
+        }
+        if (storedPayload && storedPayload.deliveryId) {
+          storedDeliveryId = String(storedPayload.deliveryId);
+        }
+      } catch {}
+
+      const timestamp = storedTimestamp || Date.now().toString();
       const signature = generateHmac(item.payload, merchant.webhookSecret);
+      const timestampedSignature = generateHmac(`${timestamp}.${item.payload}`, merchant.webhookSecret);
 
       let isSuccess = false;
       let respStatus = null;
@@ -260,7 +279,8 @@ export class WebhookEngine {
             'Content-Type': 'application/json',
             'X-Gateway-Event': item.event_type,
             'X-Gateway-Signature': `sha256=${signature}`,
-            'X-Gateway-Delivery-Id': item.id,
+            'X-Gateway-Signature-V2': `sha256=${timestampedSignature}`,
+            'X-Gateway-Delivery-Id': storedDeliveryId,
             'X-Gateway-Timestamp': timestamp
           },
           body: item.payload,

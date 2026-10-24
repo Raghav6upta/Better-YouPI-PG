@@ -81,6 +81,12 @@ test('real browser shadow-DOM receipt → authenticated API → checkout SUCCESS
     assert.equal(hooks.length, 1);
     assert.equal(verifyHmac(hooks[0].raw, merchant.webhookSecret, hooks[0].headers['x-gateway-signature'].slice(7)), true);
     const payload = JSON.parse(hooks[0].raw);
+    assert.equal(payload.deliveryId, hooks[0].headers['x-gateway-delivery-id']);
+    assert.equal(String(payload.timestamp), hooks[0].headers['x-gateway-timestamp']);
+    assert.equal(verifyHmac(`${payload.timestamp}.${hooks[0].raw}`, merchant.webhookSecret,
+      hooks[0].headers['x-gateway-signature-v2'].slice(7)), true);
+    const outbox = db.queryOne('SELECT id FROM payment_event_outbox WHERE payment_id = ?', [session.id]);
+    assert.equal(payload.deliveryId, outbox.id);
     assert.equal(payload.utr, '123456789012');
     assert.equal(payload.method, 'UPI');
     assert.equal(payload.orderId, 'BROWSER-ORDER');
