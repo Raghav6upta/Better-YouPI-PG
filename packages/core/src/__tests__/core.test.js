@@ -9,6 +9,7 @@ import {
   BankSmsParser
 } from '../index.js';
 import { extractIntelligentAmount } from '../bank-sms-parser.js';
+import { extractIntelligentPaise } from '../normalizer.js';
 import {
   PaymentStatus,
   PublicPaymentOutcome,
@@ -26,6 +27,21 @@ import {
 } from '@youpi/db';
 
 describe('@youpi/core Unit & Integration Tests', () => {
+  test('normalizer retains compact currency and named sender formats', () => {
+    for (const text of ['credited Rs500.00', 'credited INR500', 'Rs.500.00 received']) {
+      assert.equal(extractIntelligentPaise(text), 50000n, text);
+    }
+    for (const sender of ['from Rahul (rahul@upi)', 'from Rahul [rahul@upi]', 'from rahul@upi', 'from Rahul (UPI ID: rahul@upi)']) {
+      const observation = ObservationNormalizer.normalize({
+        source: ObserverSource.GOOGLE_MESSAGES,
+        receivingAccountId: 'normalizer-compatibility',
+        rawPayload: { text: `Rs 500.00 credited ${sender} UTR: 123456789012` }
+      });
+      assert.equal(observation.amountPaise, 50000n);
+      assert.equal(observation.senderVpa, 'rahul@upi', sender);
+    }
+  });
+
   describe('Payment State Machine', () => {
     test('permits valid transitions and denies illegal transitions', () => {
       assert.equal(isValidTransition(PaymentStatus.INITIATED, PaymentStatus.ACTIVE), true);
