@@ -20,7 +20,7 @@ export function extractIntelligentPaise(text) {
   if (!text || typeof text !== 'string') return null;
 
   // Pattern 1: Standard currency prefix (e.g. Rs. 20.00, Rs 200, INR 500.00, ₹1,200.50, ₹20)
-  const prefixMatch = text.match(/(?:rs\.?|inr|₹)\s*(\b\d[\d,]{0,15}(?:\.\d{1,2})?)/i);
+  const prefixMatch = text.match(/(?:rs\.?|inr|₹)\s*(\d[\d,]{0,15}(?:\.\d{1,2})?)/i);
   if (prefixMatch && prefixMatch[1]) {
     const clean = prefixMatch[1].replace(/,/g, '');
     try { return toPaise(clean); } catch {}
@@ -64,7 +64,9 @@ const REFERENCE_REGEX = /(?:utr|ref(?:\s*no\.?)?|txn(?:\s*(?:id|#))?|transaction
  * Regex for extracting sender VPA if present in notification text.
  * Matches: from user@upi, from 9876543210@paytm, from Rahul (UPI ID: rahul@fam), etc.
  */
-const SENDER_VPA_REGEX = /(?:from|by|vpa|upi\s*id)[\s:]+([a-zA-Z0-9.\-_]{2,100}@[a-zA-Z0-9.\-_]{2,64})/i;
+// Bound the optional display name so restoring named senders does not reintroduce
+// the unbounded, overlapping whitespace repetitions from the original parser.
+const SENDER_VPA_REGEX = /(?:from|by|vpa|upi\s*id)[\s:]{1,16}(?:[a-zA-Z][a-zA-Z ]{0,79}[\(\[])?([a-zA-Z0-9.\-_]{2,100}@[a-zA-Z0-9.\-_]{2,64})/i;
 
 export class ObservationNormalizer {
   /**
