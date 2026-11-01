@@ -22,12 +22,16 @@ const BASE_SECURITY_HEADERS = Object.freeze({
  * injected raw into the order-status templates.
  */
 function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+  return String(value ?? '').replace(/[&<>"']/g, char => {
+    switch (char) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      case "'": return '&#39;';
+      default: return char;
+    }
+  });
 }
 
 /** Upper bound for an unauthenticated JSON request body. */
@@ -104,8 +108,11 @@ export class CoinWalletStoreServer {
     // Canonical public origin of this store. Post-payment return URLs are built from this
     // value rather than from the request's Host / X-Forwarded-* headers, which are
     // attacker-controllable and would otherwise allow redirecting paying customers elsewhere.
-    this.publicBaseUrl = (options.publicBaseUrl || process.env.COIN_STORE_PUBLIC_URL || `http://localhost:${process.env.STORE_PORT || 5000}`)
-      .replace(/\/+$/, '');
+    let pubUrl = options.publicBaseUrl || process.env.COIN_STORE_PUBLIC_URL || `http://localhost:${process.env.STORE_PORT || 5000}`;
+    while (pubUrl.endsWith('/')) {
+      pubUrl = pubUrl.slice(0, -1);
+    }
+    this.publicBaseUrl = pubUrl;
 
     // orderId -> gateway paymentId for orders this store created (used to verify payments server-side)
     this.orderPayments = new Map();

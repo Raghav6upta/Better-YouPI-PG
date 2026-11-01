@@ -22,6 +22,16 @@
 
   const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
 
+  function sanitizeModalUrl(url) {
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return parsed.href;
+      }
+    } catch {}
+    return 'about:blank';
+  }
+
   /**
    * Helper: extract configuration from the <script> tag loading this file.
    */
@@ -314,13 +324,17 @@
         this.backdrop.classList.remove('active');
       }
 
+      // The closing modal may no longer be the current one when its animation ends.
+      const closingBackdrop = this.backdrop;
       setTimeout(() => {
-        if (this.backdrop && this.backdrop.parentNode) {
-          this.backdrop.parentNode.removeChild(this.backdrop);
+        if (closingBackdrop && closingBackdrop.parentNode) {
+          closingBackdrop.parentNode.removeChild(closingBackdrop);
         }
-        this.backdrop = null;
-        this.container = null;
-        this.iframe = null;
+        if (this.backdrop === closingBackdrop) {
+          this.backdrop = null;
+          this.container = null;
+          this.iframe = null;
+        }
 
         if (typeof this.options.onClose === 'function') {
           this.options.onClose();
@@ -340,7 +354,7 @@
 
       const closeBtn = document.createElement('button');
       closeBtn.className = 'youpi-checkout-close-btn';
-      closeBtn.innerHTML = '✕';
+      closeBtn.textContent = '✕';
       closeBtn.title = 'Close Checkout';
       closeBtn.type = 'button';
       closeBtn.onclick = () => {
@@ -358,7 +372,7 @@
 
       const iframe = document.createElement('iframe');
       iframe.className = 'youpi-checkout-iframe';
-      iframe.src = targetUrl;
+      iframe.src = sanitizeModalUrl(targetUrl);
       // Only messages from this exact iframe/origin are trusted (see _handleMessage).
       this._iframe = iframe;
       try { this._iframeOrigin = new URL(targetUrl, window.location.href).origin; } catch { this._iframeOrigin = null; }
@@ -434,6 +448,7 @@ _isSafeRedirect(url) {
       const rawData = e.data.data || e.data;
 
       if (event === 'youpi.payment_success') {
+        const successBackdrop = this.backdrop;
         const payload = e.data.data || {};
         const result = {
           status: 'SUCCESS',
@@ -457,6 +472,7 @@ _isSafeRedirect(url) {
         }
 
         setTimeout(() => {
+          if (!this.isOpen || this.backdrop !== successBackdrop) return;
           this.close(() => {
             if (this.options.successUrl) {
               const delim = this.options.successUrl.includes('?') ? '&' : '?';

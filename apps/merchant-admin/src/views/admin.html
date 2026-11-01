@@ -3826,8 +3826,7 @@
     // runs, so escaping them here would not prevent a break-out anyway.
     function escapeAttribute(str) {
       return escapeHtmlValue(str)
-        .replace(/&#039;/g, "'")
-        .replace(/&quot;/g, '&quot;');
+        .replace(/&#039;/g, "'");
     }
 
     // Builds a JavaScript literal that is safe to place inside a double-quoted
@@ -3836,6 +3835,17 @@
     function jsArg(value) {
       const literal = JSON.stringify(value === null || value === undefined ? '' : String(value));
       return escapeAttribute(literal);
+    }
+
+    function sanitizeImageUrl(url) {
+      if (!url || typeof url !== 'string') return '';
+      try {
+        const parsed = new URL(url.trim(), window.location.href);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          return parsed.href;
+        }
+      } catch {}
+      return '';
     }
 
     // --- REAL LIGHT / DARK THEME CONTROLLER ---
@@ -4778,8 +4788,9 @@
 
       const avatarLetter = document.getElementById('mockupAvatarLetter');
       const avatarImg = document.getElementById('mockupAvatarImg');
-      if (logoUrl && avatarImg && avatarLetter) {
-        avatarImg.src = logoUrl;
+      const safeLogoUrl = sanitizeImageUrl(logoUrl);
+      if (safeLogoUrl && avatarImg && avatarLetter) {
+        avatarImg.src = safeLogoUrl;
         avatarImg.style.display = 'block';
         avatarLetter.style.display = 'none';
         avatarImg.onerror = () => { avatarImg.style.display = 'none'; avatarLetter.style.display = 'block'; };
@@ -4819,8 +4830,9 @@
 
       const legalEl = document.getElementById('mockupLegalDisclaimer');
       if (legalEl) {
-        if (hidePoweredBy) legalEl.innerHTML = `Secured by 256-Bit Bank Encryption &bull; Privacy &amp; Terms`;
-        else legalEl.innerHTML = `Secured by ${appName} &amp; 256-Bit Bank Encryption &bull; Privacy Notice`;
+        legalEl.textContent = hidePoweredBy
+          ? 'Secured by 256-Bit Bank Encryption • Privacy & Terms'
+          : `Secured by ${appName} & 256-Bit Bank Encryption • Privacy Notice`;
       }
 
       const ctaBtn = document.getElementById('mockupCtaButton');

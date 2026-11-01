@@ -1,5 +1,19 @@
 # 24 October 2026 upstream integration
 
+## 2026-11-01 ? Reviewed upstream security and lifecycle backports
+
+Reviewed upstream through `e7a9dc0`. This is a selective integration, not a full synchronization: the last complete reviewed baseline remains `d7b0741`.
+
+- Backport DOM-safe rendering, checkout URL scheme validation, exact observer host checks, cryptographic pairing randomness, and bounded parsing from `4ade60d` / `e4e3b43`.
+- Retain this fork's salted PBKDF2 merchant API keys, HMAC OAuth state, and existing customer sign-in storage. Do not import XOR/base64 credential obfuscation as encryption.
+- Preserve active expiry timers when processing/cancellation transactions fail (`d53ca25`, `81a449f`) with their regression tests.
+- Keep closing and delayed-success callbacks tied to the checkout that created them (`fe4175d`, `2aaa84c`, `d702e21`, `a005b89`) with close/reopen regressions.
+- Honor configured Gmail callback and control-center ports, and load root development configuration before migration (`4b43362`, `56bfc96`, `fac4a23`).
+- Preserve Amazon receipt verification, WhatsApp OTP setup, desktop QR and mobile UPI app links. No credentials or runtime data are imported.
+
+Deferred: upstream's OBSERVED_SUCCESS/RECONCILED statement workflow, multi-merchant/branding rollout, Gmail canary policies, deployment-specific pilot assets, and the coupled modern-outcome outbox migration. These require a separate compatibility migration; this release does not claim feature parity with upstream or change the existing SUCCESS webhook contract. Existing receipt-matching limits still apply (see AMAZON_PAY.md).
+
+
 - Integrated reviewed changes through upstream `d7b0741`, using a squash import to exclude a committed WhatsApp runtime metadata file and its history.
 - Added upstream order amount/currency reuse validation, merchant key support, timestamped webhook signatures, header-authenticated dashboard streams, CI checks and optional MCP diagnostics.
 - Preserved Amazon Pay verification, its durable webhook outbox, WhatsApp OTP setup, mobile UPI links and the existing customer/device token migration.

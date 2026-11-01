@@ -375,8 +375,14 @@ export class PaymentVerificationPipeline {
         }
       }
     } else if (source === 'GMAIL') {
-      const emailMatch = sender.match(/<([^>]+)>/);
-      const cleanEmail = (emailMatch ? emailMatch[1] : sender).trim();
+      let cleanEmail = sender;
+      const ltIdx = sender.indexOf('<');
+      const gtIdx = sender.lastIndexOf('>');
+      if (ltIdx !== -1 && gtIdx > ltIdx) {
+        cleanEmail = sender.slice(ltIdx + 1, gtIdx).trim();
+      } else {
+        cleanEmail = sender.trim();
+      }
       let emailDomain = '';
       if (cleanEmail.includes('@')) {
         emailDomain = cleanEmail.split('@')[1]?.toLowerCase().trim().replace(/[>]/g, '');

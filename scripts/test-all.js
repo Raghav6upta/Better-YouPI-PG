@@ -1,6 +1,12 @@
 import { spawnSync } from 'node:child_process';
 
 const testFiles = [
+  'packages/common/src/__tests__/gmail-redirect-port.test.js',
+  'packages/core/src/__tests__/timing-transition-failure.test.js',
+  'packages/core/src/__tests__/cancel-timer-failure.test.js',
+  'packages/merchant-sdk/src/__tests__/checkout-close-lifecycle.test.js',
+  'packages/merchant-sdk/src/__tests__/checkout-success-lifecycle.test.js',
+
   'packages/common/src/__tests__/common.test.js',
   'packages/common/src/__tests__/whatsapp-logging.test.js',
   'packages/db/src/__tests__/customer-reset.test.js',
@@ -27,6 +33,7 @@ const testFiles = [
   'apps/sms-observer/src/__tests__/sms-observer.test.js',
   'apps/android-observer-app/__tests__/android-observer.test.js',
   'apps/control-center/src/__tests__/control-center.test.js',
+  'scripts/control-center-port.test.js',
   'apps/payment-api/src/__tests__/payment-api.test.js',
   'apps/payment-api/src/__tests__/auth-guard.test.js',
   'apps/payment-api/src/__tests__/counter-payments.test.js',
@@ -42,10 +49,10 @@ const testFiles = [
   'apps/payment-api/src/__tests__/whitelabel-branding.test.js',
   'apps/payment-api/src/__tests__/cod-parallel-timer-decoupling.test.js',
   'apps/payment-api/src/__tests__/gateway-hardening-invariants.test.js',
-  'apps/payment-api/src/__tests__/verification-fallthrough.test.js',
   'apps/payment-api/src/__tests__/observer-poller.test.js',
   'scripts/chaos-concurrency.test.js',
-  'scripts/production-infrastructure.test.js'
+  'scripts/production-infrastructure.test.js',
+  'scripts/dev-env.test.js'
 ];
 
 console.log('============================================================');

@@ -8,7 +8,9 @@ export class PaymentObserverClient {
    * }} options
    */
   constructor(options) {
-    this.apiBaseUrl = (options.apiBaseUrl || process.env.BASE_PAYMENT_API_URL || 'http://localhost:6100').replace(/\/+$/, '');
+    let url = options.apiBaseUrl || process.env.BASE_PAYMENT_API_URL || 'http://localhost:6100';
+    while (url.endsWith('/')) url = url.slice(0, -1);
+    this.apiBaseUrl = url;
     this.sourceName = options.sourceName;
   }
 

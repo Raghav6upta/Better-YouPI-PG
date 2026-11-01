@@ -10,7 +10,9 @@ export class YoupiPaymentClient {
    * }} options
    */
   constructor(options = {}) {
-    this.apiUrl = (options.apiUrl || process.env.BASE_PAYMENT_API_URL || 'http://localhost:6100').replace(/\/+$/, '');
+    let url = options.apiUrl || process.env.BASE_PAYMENT_API_URL || 'http://localhost:6100';
+    while (url.endsWith('/')) url = url.slice(0, -1);
+    this.apiUrl = url;
     this.merchantId = options.merchantId || null;
     this.webhookSecret = options.webhookSecret || null;
     this.apiKey = options.apiKey || null;

@@ -9,6 +9,27 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../../..');
 
+function isGoogleMessagesUrl(urlString) {
+  if (!urlString || typeof urlString !== 'string') return false;
+  try {
+    const parsed = new URL(urlString);
+    return parsed.hostname === 'messages.google.com';
+  } catch {
+    return false;
+  }
+}
+
+function isPairedMessagesUrl(urlString) {
+  if (!urlString || typeof urlString !== 'string') return false;
+  try {
+    const parsed = new URL(urlString);
+    if (parsed.hostname !== 'messages.google.com') return false;
+    return parsed.pathname.includes('/web') && !parsed.pathname.includes('/authentication');
+  } catch {
+    return false;
+  }
+}
+
 export class GoogleMessagesAutomator {
   /**
    * @param {{
@@ -84,11 +105,11 @@ export class GoogleMessagesAutomator {
 
     try {
       const targets = await BrowserLauncher.getTargets(this.debuggingPort);
-      const active = targets.find(t => t.url && t.url.includes('messages.google.com'));
+      const active = targets.find(t => isGoogleMessagesUrl(t.url));
 
       if (active) {
         this.lastSeenAt = new Date();
-        const isPairedUrl = (!active.url.includes('/authentication') && active.url.includes('/web'));
+        const isPairedUrl = isPairedMessagesUrl(active.url);
         if (isPairedUrl) {
           this.isPaired = true;
           this.saveStoredPairedState(true);
@@ -178,12 +199,12 @@ export class GoogleMessagesAutomator {
     this.checkTimer = setInterval(async () => {
       try {
         const targets = await BrowserLauncher.getTargets(this.debuggingPort);
-        const msgTarget = targets.find(t => t.url && t.url.includes('messages.google.com'));
+        const msgTarget = targets.find(t => isGoogleMessagesUrl(t.url));
 
         if (msgTarget) {
           this.lastSeenAt = new Date();
 
-          const isPairedUrl = (!msgTarget.url.includes('/authentication') && msgTarget.url.includes('/web'));
+          const isPairedUrl = isPairedMessagesUrl(msgTarget.url);
 
           if (isPairedUrl && !this.isPaired) {
             // User just scanned QR in visible window!
@@ -240,9 +261,9 @@ export class GoogleMessagesAutomator {
 
     try {
       const targets = await BrowserLauncher.getTargets(this.debuggingPort);
-    const target = targets.find(t => (t.type === 'page' || !t.type) && t.url && t.url.includes('messages.google.com') && t.webSocketDebuggerUrl)
-      || targets.find(t => t.url && t.url.includes('messages.google.com') && t.webSocketDebuggerUrl);
-    if (!target) return;
+      const target = targets.find(t => (t.type === 'page' || !t.type) && isGoogleMessagesUrl(t.url) && t.webSocketDebuggerUrl)
+        || targets.find(t => isGoogleMessagesUrl(t.url) && t.webSocketDebuggerUrl);
+      if (!target) return;
 
     this.lastSeenAt = new Date();
 

@@ -3,6 +3,14 @@ import { extractIntelligentAmount } from './bank-sms-parser.js';
 
 export { extractIntelligentAmount };
 
+function trimTrailingPunctuation(str) {
+  let s = String(str || '').trim();
+  while (s.length > 0 && (s.endsWith('.') || s.endsWith(',') || s.endsWith(';'))) {
+    s = s.slice(0, -1);
+  }
+  return s;
+}
+
 /**
  * Bank email parser for extracting UPI credit alerts across Indian banks:
  * HDFC, ICICI, SBI, Axis, Kotak, Paytm Payments Bank, custom alt-account transfers, etc.
@@ -81,7 +89,7 @@ export class BankEmailParser {
     let senderVpa;
     const vpaMatch = combinedText.match(/(?:from|by|vpa)\s+([a-zA-Z0-9.\-_]{2,100}@[a-zA-Z0-9.\-_]{2,64})/i);
     if (vpaMatch && vpaMatch[1]) {
-      senderVpa = vpaMatch[1].trim().replace(/[.,;]+$/, '');
+      senderVpa = trimTrailingPunctuation(vpaMatch[1]);
     }
 
     // 4. Timestamp

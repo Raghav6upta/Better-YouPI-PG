@@ -35,7 +35,7 @@ const BREAKOUT_VALUES = HOSTILE_VALUES.filter(v => /[<>"'\\]/.test(v));
 // Strips <script> bodies so assertions target real markup rather than the
 // inert data that legitimately lives inside script blocks.
 function markupOnly(html) {
-  return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '<script></script>');
+  return html.replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, '<script></script>');
 }
 
 describe('Checkout Portal XSS / Redirect Hardening', () => {
