@@ -18,9 +18,10 @@ const BASE_SECURITY_HEADERS = Object.freeze({
 
 /** True when the caller presented the admin bearer token in constant time (or ?token= on GET SSE). */
 function hasAdminToken(req, url = null, pathname = '') {
-  const match = /^Bearer\s+(.+)$/i.exec(req.headers?.['authorization'] || '');
-  if (match) {
-    return safeEqual(match[1].trim(), getAdminToken());
+  const auth = String(req.headers?.['authorization'] || '').trim();
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    const token = auth.slice(7).trim();
+    if (token) return safeEqual(token, getAdminToken());
   }
   // NOTE: the stream token is deliberately NOT accepted from a query parameter. A
   // credential in the URL ends up in access logs, browser history and Referer headers.

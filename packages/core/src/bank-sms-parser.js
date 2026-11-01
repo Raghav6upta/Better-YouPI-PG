@@ -21,7 +21,7 @@ export function extractIntelligentAmount(text) {
 
   // 0. Remove balance mentions (e.g. "Avl Bal Rs 10,000", "Bal: INR 5000", "Available limit Rs. 20,000")
   // to avoid extracting account balance instead of credit amount.
-  const balancePattern = /(?:(?:avl\b|avail\b|available\b|tot\b|total\b|ledger\b|clear\b|curr\b|current\b)\s*(?:bal\b|balance\b|limit\b)?|bal\b|balance\b)[\s:=-]*(?:(?:rs\b\.?|inr\b)|₹)?[\s:=-]*[\d,]+(?:\.\d{1,2})?/gi;
+  const balancePattern = /(?:(?:avl|avail|available|tot|total|ledger|clear|curr|current)(?:\s+(?:bal|balance|limit))?|bal|balance)\b[\s:=-]*(?:(?:rs\.?|inr|₹)\s*)?\b\d[\d,]{0,15}(?:\.\d{1,2})?/gi;
   const sanitizedText = normalizedText.replace(balancePattern, ' ').trim();
 
   // Pattern 0: Direct credit proximity phrases (e.g. "credited with Rs. 500", "received ₹200.00", "Rs 499.00 credited")

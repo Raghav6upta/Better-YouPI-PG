@@ -9,6 +9,30 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../../..');
 
+function isMailGoogleUrl(urlString) {
+  if (!urlString || typeof urlString !== 'string') return false;
+  try {
+    const parsed = new URL(urlString);
+    return parsed.hostname === 'mail.google.com';
+  } catch {
+    return false;
+  }
+}
+
+function isRealGmailInbox(target) {
+  if (!target || !target.url || typeof target.url !== 'string') return false;
+  try {
+    const parsed = new URL(target.url);
+    if (parsed.hostname !== 'mail.google.com') return false;
+    const isMailPath = parsed.pathname.startsWith('/mail');
+    const hasInboxIndicator = parsed.hash.includes('#inbox') || parsed.hash.includes('#all') || (target.title && target.title.includes('Inbox'));
+    const isLoginPath = parsed.pathname.includes('signin') || parsed.pathname.includes('ServiceLogin');
+    return isMailPath && hasInboxIndicator && !isLoginPath;
+  } catch {
+    return false;
+  }
+}
+
 export class GmailBrowserAutomator {
   /**
    * @param {{
@@ -84,15 +108,11 @@ export class GmailBrowserAutomator {
 
     try {
       const targets = await BrowserLauncher.getTargets(this.debuggingPort);
-      const active = targets.find(t => t.url && t.url.includes('mail.google.com'));
+      const active = targets.find(t => isMailGoogleUrl(t.url));
 
       if (active) {
         this.lastCheckedAt = new Date();
-        const isRealInbox = active.url.includes('mail.google.com/mail') &&
-          (active.url.includes('#inbox') || active.url.includes('#all') || (active.title && active.title.includes('Inbox'))) &&
-          !active.url.includes('accounts.google.com') &&
-          !active.url.includes('signin') &&
-          !active.url.includes('ServiceLogin');
+        const isRealInbox = isRealGmailInbox(active);
 
         if (isRealInbox) {
           this.isLoggedIn = true;
@@ -183,16 +203,12 @@ export class GmailBrowserAutomator {
     this.checkTimer = setInterval(async () => {
       try {
         const targets = await BrowserLauncher.getTargets(this.debuggingPort);
-        const gmailTarget = targets.find(t => t.url && t.url.includes('mail.google.com'));
+        const gmailTarget = targets.find(t => isMailGoogleUrl(t.url));
 
         if (gmailTarget) {
           this.lastCheckedAt = new Date();
 
-          const isRealInbox = gmailTarget.url.includes('mail.google.com/mail') &&
-            (gmailTarget.url.includes('#inbox') || gmailTarget.url.includes('#all') || (gmailTarget.title && gmailTarget.title.includes('Inbox'))) &&
-            !gmailTarget.url.includes('accounts.google.com') &&
-            !gmailTarget.url.includes('signin') &&
-            !gmailTarget.url.includes('ServiceLogin');
+          const isRealInbox = isRealGmailInbox(gmailTarget);
 
           if (isRealInbox && !this.isLoggedIn) {
             this.saveStoredLoginState(true);
@@ -245,9 +261,9 @@ export class GmailBrowserAutomator {
 
     try {
       const targets = await BrowserLauncher.getTargets(this.debuggingPort);
-    const target = targets.find(t => (t.type === 'page' || !t.type) && t.url && t.url.includes('mail.google.com') && t.webSocketDebuggerUrl)
-      || targets.find(t => t.url && t.url.includes('mail.google.com') && t.webSocketDebuggerUrl);
-    if (!target) return;
+      const target = targets.find(t => (t.type === 'page' || !t.type) && isMailGoogleUrl(t.url) && t.webSocketDebuggerUrl)
+        || targets.find(t => isMailGoogleUrl(t.url) && t.webSocketDebuggerUrl);
+      if (!target) return;
 
     this.lastCheckedAt = new Date();
 

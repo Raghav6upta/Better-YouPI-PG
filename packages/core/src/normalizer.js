@@ -1,5 +1,13 @@
 import { ObserverSource, ObservationAttributionStatus, toPaise, calculateObservationFingerprint } from '@youpi/common';
 
+function trimTrailingPunctuation(str) {
+  let s = String(str || '').trim();
+  while (s.length > 0 && (s.endsWith('.') || s.endsWith(',') || s.endsWith(';'))) {
+    s = s.slice(0, -1);
+  }
+  return s;
+}
+
 /**
  * Intelligent Monetary Amount Extractor.
  * Extracts amounts with prefix (Rs. 20.00, INR 500), suffix (20.00 Rs),
@@ -12,21 +20,21 @@ export function extractIntelligentPaise(text) {
   if (!text || typeof text !== 'string') return null;
 
   // Pattern 1: Standard currency prefix (e.g. Rs. 20.00, Rs 200, INR 500.00, ₹1,200.50, ₹20)
-  const prefixMatch = text.match(/(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)/i);
+  const prefixMatch = text.match(/(?:rs\.?|inr|₹)\s*(\b\d[\d,]{0,15}(?:\.\d{1,2})?)/i);
   if (prefixMatch && prefixMatch[1]) {
     const clean = prefixMatch[1].replace(/,/g, '');
     try { return toPaise(clean); } catch {}
   }
 
   // Pattern 2: Standard currency suffix (e.g. 20.00 Rs, 20.00 INR, 20rs, 500 inr)
-  const suffixMatch = text.match(/([\d,]+(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)/i);
+  const suffixMatch = text.match(/(\b\d[\d,]{0,15}(?:\.\d{1,2})?)\s*(?:rs\.?|inr|₹)/i);
   if (suffixMatch && suffixMatch[1]) {
     const clean = suffixMatch[1].replace(/,/g, '');
     try { return toPaise(clean); } catch {}
   }
 
   // Pattern 3: Number in proximity to credit keywords (e.g. "20.00 received", "received 20.00", "credited 20", "20.00 credited")
-  const creditProximityMatch = text.match(/(?:credited|received|deposit|payment|paid|transferred|upi|cr)[\s\w:]*?([\d,]+(?:\.\d{1,2})?)|([\d,]+(?:\.\d{1,2})?)[\s\w:]*?(?:credited|received|deposit|payment|paid|transferred|upi|cr)/i);
+  const creditProximityMatch = text.match(/(?:credited|received|deposit|payment|paid|transferred|upi|cr)[^\d\n\r]{0,30}?(\b\d[\d,]{0,15}(?:\.\d{1,2})?)|(\b\d[\d,]{0,15}(?:\.\d{1,2})?)[^\d\n\r]{0,30}?(?:credited|received|deposit|payment|paid|transferred|upi|cr)/i);
   if (creditProximityMatch) {
     const rawVal = creditProximityMatch[1] || creditProximityMatch[2];
     if (rawVal) {
@@ -56,7 +64,7 @@ const REFERENCE_REGEX = /(?:utr|ref(?:\s*no\.?)?|txn(?:\s*(?:id|#))?|transaction
  * Regex for extracting sender VPA if present in notification text.
  * Matches: from user@upi, from 9876543210@paytm, from Rahul (UPI ID: rahul@fam), etc.
  */
-const SENDER_VPA_REGEX = /(?:from|by|vpa|upi\s*id)[\s:]+(?:[a-zA-Z\s]+[\(\[])?([a-zA-Z0-9.\-_]{2,100}@[a-zA-Z0-9.\-_]{2,64})/i;
+const SENDER_VPA_REGEX = /(?:from|by|vpa|upi\s*id)[\s:]+([a-zA-Z0-9.\-_]{2,100}@[a-zA-Z0-9.\-_]{2,64})/i;
 
 export class ObservationNormalizer {
   /**
@@ -137,7 +145,7 @@ export class ObservationNormalizer {
     if (!senderVpa && textContent) {
       const vpaMatch = textContent.match(SENDER_VPA_REGEX);
       if (vpaMatch && vpaMatch[1]) {
-        senderVpa = vpaMatch[1].trim().replace(/[.,;]+$/, '');
+        senderVpa = trimTrailingPunctuation(vpaMatch[1]);
       }
     }
 

@@ -1267,6 +1267,16 @@
       }
     }
 
+    function resetCodConfirmButton(button, amount) {
+      if (!button) return;
+      button.disabled = false;
+      button.replaceChildren();
+      const span = document.createElement('span');
+      span.textContent = `Confirm & Place COD Order (₹${amount || '{{AMOUNT}}'})`;
+      button.appendChild(span);
+      button.appendChild(document.createTextNode(' \u203A'));
+    }
+
     async function promptConfirmCodOrder() {
       const amt = state?.amount || '{{AMOUNT}}';
       if (!confirm(`Are you sure you want to confirm and place this Cash on Delivery (COD) order for ₹${amt}? You will pay in cash upon doorstep delivery.`)) {
@@ -1292,17 +1302,11 @@
           loadState();
         } else {
           alert(data.error || 'Failed to place COD order');
-          if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '<span>Confirm &amp; Place COD Order (₹' + (state?.amount || '{{AMOUNT}}') + ')</span> &rsaquo;';
-          }
+          resetCodConfirmButton(btn, state?.amount);
         }
       } catch (e) {
         alert('Network error confirming COD order.');
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = '<span>Confirm &amp; Place COD Order (₹' + (state?.amount || '{{AMOUNT}}') + ')</span> &rsaquo;';
-        }
+        resetCodConfirmButton(btn, state?.amount);
       }
     }
 
